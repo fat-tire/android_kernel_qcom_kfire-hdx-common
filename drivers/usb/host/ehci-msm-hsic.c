@@ -342,7 +342,7 @@ static void dump_hsic_regs(struct usb_hcd *hcd)
 
 #define HSIC_DBG1_REG		0x38
 
-static const int vdd_val[VDD_TYPE_MAX][VDD_VAL_MAX] = {
+static int vdd_val[VDD_TYPE_MAX][VDD_VAL_MAX] = {
 		{   /* VDD_CX CORNER Voting */
 			[VDD_NONE]	= RPM_VREG_CORNER_NONE,
 			[VDD_MIN]	= RPM_VREG_CORNER_NOMINAL,
@@ -359,6 +359,8 @@ static int msm_hsic_init_vddcx(struct msm_hsic_hcd *mehci, int init)
 {
 	int ret = 0;
 	int none_vol, min_vol, max_vol;
+	u32 tmp[3];
+	int len = 0;
 
 	if (!mehci->hsic_vddcx) {
 		mehci->vdd_type = VDDCX_CORNER;
@@ -372,6 +374,22 @@ static int msm_hsic_init_vddcx(struct msm_hsic_hcd *mehci, int init)
 				return PTR_ERR(mehci->hsic_vddcx);
 			}
 			mehci->vdd_type = VDDCX;
+		}
+
+		if (mehci->dev->of_node) {
+			of_get_property(mehci->dev->of_node,
+					"hsic,vdd-voltage-level",
+					&len);
+			if (len == sizeof(tmp)) {
+				of_property_read_u32_array(mehci->dev->of_node,
+						"hsic,vdd-voltage-level",
+						tmp, len/sizeof(*tmp));
+				vdd_val[mehci->vdd_type][VDD_NONE] = tmp[0];
+				vdd_val[mehci->vdd_type][VDD_MIN] = tmp[1];
+				vdd_val[mehci->vdd_type][VDD_MAX] = tmp[2];
+			} else {
+				dev_dbg(mehci->dev, "Use default vdd config\n");
+			}
 		}
 	}
 
@@ -1058,12 +1076,14 @@ static irqreturn_t msm_hsic_irq(struct usb_hcd *hcd)
 	return ehci_irq(hcd);
 }
 
+#define USB_SYS_CLK_HOST_DEV_GATE_EN	BIT(13)
 static int ehci_hsic_reset(struct usb_hcd *hcd)
 {
 	struct ehci_hcd *ehci = hcd_to_ehci(hcd);
 	struct msm_hsic_hcd *mehci = hcd_to_hsic(hcd);
 	struct msm_hsic_host_platform_data *pdata = mehci->dev->platform_data;
 	int retval;
+	u32 temp;
 
 	mehci->timer = USB_HS_GPTIMER_BASE;
 	ehci->caps = USB_CAPLENGTH;
@@ -1100,6 +1120,12 @@ static int ehci_hsic_reset(struct usb_hcd *hcd)
 		writel_relaxed(0x08 | MSM_USB_ASYNC_BRIDGE_BYPASS, USB_AHBMODE);
 	else
 		writel_relaxed(0x08, USB_AHBMODE);
+
+	if (pdata->dis_internal_clk_gating) {
+		temp = readl_relaxed(USB_GENCONFIG2); 
+		temp &= ~USB_SYS_CLK_HOST_DEV_GATE_EN;
+		writel_relaxed(temp, USB_GENCONFIG2);
+	}
 
 	/* Disable streaming mode and select host mode */
 	writel_relaxed(0x13, USB_USBMODE);
@@ -1872,6 +1898,8 @@ struct msm_hsic_host_platform_data *msm_hsic_dt_to_pdata(
 
 	pdata->phy_sof_workaround = of_property_read_bool(node,
 					"qcom,phy-sof-workaround");
+	pdata->dis_internal_clk_gating = of_property_read_bool(node,
+					"qcom,dis-internal-clk-gating");
 	pdata->phy_susp_sof_workaround = of_property_read_bool(node,
 					"qcom,phy-susp-sof-workaround");
 	pdata->phy_reset_sof_workaround = of_property_read_bool(node,

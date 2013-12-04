@@ -23,6 +23,11 @@
 #include <linux/input.h>
 #include <linux/log2.h>
 #include <linux/qpnp/power-on.h>
+#if defined(CONFIG_AMAZON_METRICS_LOG)
+#include <linux/io.h>
+#include <mach/socinfo.h>
+#include <linux/metricslog.h>
+#endif
 
 /* Common PNP defines */
 #define QPNP_PON_REVISION2(base)		(base + 0x01)
@@ -32,6 +37,16 @@
 #define QPNP_PON_PON_REASON(base)		(base + 0x08)
 #define QPNP_PON_POFF_REASON1(base)		(base + 0x0C)
 #define QPNP_PON_POFF_REASON2(base)		(base + 0x0D)
+#if defined(CONFIG_AMAZON_METRICS_LOG)
+#define QPNP_PON_POWER_OFF_MASK			0xF
+#define PON_POWER_OFF_HARD_RESET		0x07
+#define QPNP_PON_POFF_REASON_METRICS(base)	(base + 0x8D)
+#define QPNP_PON_METRICS_MAGIC			0xab
+#define QPNP_PON_POFF_REASON_SWWD(base)		(base + 0x8E)
+#define PANIC_METRICS_MASK				0xcd
+#define WD_METRICS_MASK				0x3
+#define SW_WD_CLEAR				0x00
+#endif
 #define QPNP_PON_SOFT_RESET_REASON1(base)	(base + 0x0E)
 #define QPNP_PON_SOFT_RESET_REASON2(base)	(base + 0x0F)
 #define QPNP_PON_RT_STS(base)			(base + 0x10)
@@ -279,6 +294,102 @@ int qpnp_pon_system_pwr_off(bool reset)
 }
 EXPORT_SYMBOL(qpnp_pon_system_pwr_off);
 
+#if defined(CONFIG_AMAZON_METRICS_LOG)
+int qpnp_pon_record_sw_wd(void)
+{
+	int rc;
+	u8 wdreg = PANIC_METRICS_MASK;
+
+	struct qpnp_pon *pon = sys_reset_dev;
+
+	if (!pon)
+		return -ENODEV;
+
+	rc = spmi_ext_register_writel(pon->spmi->ctrl, pon->spmi->sid,
+					QPNP_PON_POFF_REASON_SWWD(pon->base),
+					&wdreg, 1);
+
+	if (rc) {
+		dev_err(&pon->spmi->dev,
+				"Unable to write record_metrics\n");
+		return rc;
+	}
+
+	return rc;
+}
+EXPORT_SYMBOL(qpnp_pon_record_sw_wd);
+
+int qpnp_pon_record_normpoff(void)
+{
+	int rc;
+	u8 record_metrics = QPNP_PON_METRICS_MAGIC;
+	struct qpnp_pon *pon = sys_reset_dev;
+
+	if (!pon)
+		return -ENODEV;
+
+	rc = spmi_ext_register_writel(pon->spmi->ctrl, pon->spmi->sid,
+					QPNP_PON_POFF_REASON_METRICS(pon->base),
+					&record_metrics, 1);
+	if (rc) {
+		dev_err(&pon->spmi->dev,
+				"Unable to write record_metrics\n");
+		return rc;
+	}
+
+	return rc;
+}
+EXPORT_SYMBOL(qpnp_pon_record_normpoff);
+
+int qpnp_pon_system_pwr_off_metrics()
+{
+	int rc;
+	u16 rst_en_reg;
+	struct qpnp_pon *pon = sys_reset_dev;
+
+	if (!pon)
+		return -ENODEV;
+
+	/* Rev3 pmic changes RST_CTL enable register */
+	rst_en_reg = (qpnp_pon_version(pon) >= 0x03) ?
+		QPNP_PON_PS_HOLD_RST_CTL2(pon->base) :
+		QPNP_PON_PS_HOLD_RST_CTL(pon->base);
+
+	rc = qpnp_pon_masked_write(pon, rst_en_reg, QPNP_PON_RESET_EN, 0);
+	if (rc)
+		dev_err(&pon->spmi->dev,
+			"Unable to write to addr=%x, rc(%d)\n", rst_en_reg, rc);
+
+	/*
+	 * We need 10 sleep clock cycles here. But since the clock is
+	 * internally generated, we need to add 50% tolerance to be
+	 * conservative.
+	 */
+	udelay(500);
+
+	rc = qpnp_pon_masked_write(pon, QPNP_PON_PS_HOLD_RST_CTL(pon->base),
+			   QPNP_PON_POWER_OFF_MASK, PON_POWER_OFF_HARD_RESET);
+	if (rc)
+		dev_err(&pon->spmi->dev,
+			"Unable to write to addr=%x, rc(%d)\n",
+				QPNP_PON_PS_HOLD_RST_CTL(pon->base), rc);
+
+	/*
+	* We need 10 sleep clock cycles here. But since the clock is
+	* internally generated, we need to add 50% tolerance to be
+	* conservative.
+	*/
+	udelay(500);
+
+	rc = qpnp_pon_masked_write(pon, rst_en_reg, QPNP_PON_RESET_EN,
+						    QPNP_PON_RESET_EN);
+	if (rc)
+		dev_err(&pon->spmi->dev,
+			"Unable to write to addr=%x, rc(%d)\n", rst_en_reg, rc);
+	return rc;
+}
+EXPORT_SYMBOL(qpnp_pon_system_pwr_off_metrics);
+#endif
 /**
  * qpnp_pon_is_warm_reset - Checks if the PMIC went through a warm reset.
  *
@@ -956,6 +1067,12 @@ static int __devinit qpnp_pon_print_reset_reason(struct qpnp_pon *pon)
 	u16 warm_reason, poff_reason, soft_reason;
 	char *reset_reason;
 	char *poweron_reason = NULL;
+#if defined(CONFIG_AMAZON_METRICS_LOG)
+	u8 poff_metrics, swwd_metrics;
+	u8 clear_metrics = 0x00;
+	void __iomem *sw_watchdog;
+	u8 wdreg;
+#endif
 
 	rc = spmi_ext_register_readl(pon->spmi->ctrl, pon->spmi->sid,
 				QPNP_PON_PON_PBL_STATUS(pon->base), &pbl_status, 1);
@@ -1004,25 +1121,71 @@ static int __devinit qpnp_pon_print_reset_reason(struct qpnp_pon *pon)
 		dev_err(&pon->spmi->dev, "Unable to read soft reset reason\n");
 		return rc;
 	}
+#if defined(CONFIG_AMAZON_METRICS_LOG)
+	rc = spmi_ext_register_readl(pon->spmi->ctrl, pon->spmi->sid,
+				QPNP_PON_POFF_REASON_METRICS(pon->base),
+				(u8 *) &poff_metrics, 1);
+	if (rc) {
+		dev_err(&pon->spmi->dev, "Unable to read poff_metrics reason\n");
+		return rc;
+	}
+	/* make sure to clear the register */
+	rc = spmi_ext_register_writel(pon->spmi->ctrl, pon->spmi->sid,
+				QPNP_PON_POFF_REASON_METRICS(pon->base),
+				&clear_metrics, 1);
+	if (rc) {
+		dev_err(&pon->spmi->dev, "Unable to write clear_metrics status\n");
+		return rc;
+	}
 
+	rc = spmi_ext_register_readl(pon->spmi->ctrl, pon->spmi->sid,
+				QPNP_PON_POFF_REASON_SWWD(pon->base),
+				(u8 *) &swwd_metrics, 1);
+
+	if (rc) {
+		dev_err(&pon->spmi->dev, "Unable to read swwd_metrics reason\n");
+		return rc;
+	}
+	/* make sure to clear the register */
+	rc = spmi_ext_register_writel(pon->spmi->ctrl, pon->spmi->sid,
+				QPNP_PON_POFF_REASON_SWWD(pon->base),
+				&clear_metrics, 1);
+	if (rc) {
+		dev_err(&pon->spmi->dev, "Unable to write sw clear_metrics status\n");
+		return rc;
+	}
+
+	sw_watchdog = sw_wd_reg_addr();
+	wdreg = readb_relaxed(sw_watchdog + 0x17C0);
+#endif
 	if (warm_reason) {
 		if (warm_reason & QPNP_WARM_REASON_PMIC_WD) {
 			reset_reason = "wdog";
-		} else {
+		}
+#if defined(CONFIG_AMAZON_METRICS_LOG)
+		else if (warm_reason && (swwd_metrics & PANIC_METRICS_MASK))
+			reset_reason = "panic";
+
+		else if (warm_reason && (wdreg & WD_METRICS_MASK))
+			reset_reason = "swwd";
+#endif
+		else {
 			reset_reason = "reboot";
 		}
 	} else if (pon_reason & QPNP_PON_REASON_HARD_RESET) {
-		if (poff_reason & QPNP_POFF_REASON_KPDPWR)
-			reset_reason = "bcut";
-		else if (poff_reason &
+		if (poff_reason &
 			(QPNP_POFF_REASON_RESIN | QPNP_POFF_REASON_PMIC_WD))
 			reset_reason = "wdog";
 		else
 			reset_reason = "unknown";
 	} else {
-		reset_reason = "poweroff";
+#if defined(CONFIG_AMAZON_METRICS_LOG)
+		if (poff_metrics == QPNP_PON_METRICS_MAGIC)
+			reset_reason = "poweroff";
+		else
+#endif
+			reset_reason = "bcut";
 	}
-
 	dev_info(&pon->spmi->dev, "reboot reason: %s\n", reset_reason);
 	sprintf(g_reset_reason, "%s", reset_reason);
 

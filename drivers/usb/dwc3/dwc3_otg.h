@@ -115,6 +115,8 @@ struct dwc3_ext_xceiv {
 					enum dwc3_ext_events ext_event);
 	/* for block reset USB core */
 	void	(*ext_block_reset)(bool core_reset);
+
+	void	(*config_vbus_sensing)(bool enable);
 };
 
 /* for external transceiver driver */

@@ -563,7 +563,9 @@ static int mdss_mdp_video_display(struct mdss_mdp_ctl *ctl, void *arg)
 	struct mdss_mdp_video_ctx *ctx;
 	struct device *dev;
 	int rc;
-
+	struct mdss_panel_data *pdata;
+	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
+	pdata = ctl->panel_data;
 	mutex_lock(&mdss_update_lock);
 	pr_debug("kickoff ctl=%d\n", ctl->num);
 
@@ -573,6 +575,7 @@ static int mdss_mdp_video_display(struct mdss_mdp_ctl *ctl, void *arg)
 		mutex_unlock(&mdss_update_lock);
 		return -ENODEV;
 	}
+	ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata, panel_data);
 
 	if (((ctl->intf_num == MDSS_MDP_INTF1)
 		 || (ctl->intf_num == MDSS_MDP_INTF2))
@@ -627,6 +630,13 @@ static int mdss_mdp_video_display(struct mdss_mdp_ctl *ctl, void *arg)
 				rc, ctl->num);
 
 		ctx->timegen_en = true;
+		if(ctrl_pdata->backlight_reset){
+			pr_info("%s restoring backlight \n",__func__);
+			ctrl_pdata->backlight_reset = 0;
+			msleep(200); /* time needed before turn on bl */
+			pdata->set_backlight(pdata, 101); /* default backlight value */
+		}
+
 		rc = mdss_mdp_ctl_intf_event(ctl, MDSS_EVENT_PANEL_ON, NULL);
 		WARN(rc, "intf %d panel on error (%d)\n", ctl->intf_num, rc);
 	}
@@ -695,13 +705,22 @@ int mdss_mdp_video_reconfigure_splash_done(struct mdss_mdp_ctl *ctl)
 	int mdss_mdp_rev = MDSS_MDP_REG_READ(MDSS_MDP_REG_HW_VERSION);
 	int mdss_v2_intf_off = 0;
 	struct mdss_overlay_private *mdp5_data = mfd_to_mdp5_data(ctl->mfd);
-
+	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
 	off = 0;
 
 	pdata = ctl->panel_data;
 
 	pdata->panel_info.cont_splash_enabled = 0;
 
+	ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata, panel_data);
+
+	if((!ctrl_pdata->shared_pdata.broadcast_enable) && ctrl_pdata->backlight_reinit){
+		pr_info("%s setting backlight_reset = 1 \n",__func__);
+		ctrl_pdata->backlight_reset = 1;
+		/* turn off bl */
+		pdata->set_backlight(pdata, 0);
+		msleep(200); /* time needed before send off cmd */
+	}
 	ret = mdss_mdp_ctl_intf_event(ctl, MDSS_EVENT_CONT_SPLASH_BEGIN,
 								  NULL);
 	if (ret) {
@@ -709,6 +728,7 @@ int mdss_mdp_video_reconfigure_splash_done(struct mdss_mdp_ctl *ctl)
 			   __func__);
 		return ret;
 	}
+
 	mdss_mdp_ctl_write(ctl, 0, MDSS_MDP_LM_BORDER_COLOR);
 	off = MDSS_MDP_REG_INTF_OFFSET(ctl->intf_num);
 

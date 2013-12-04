@@ -89,6 +89,10 @@
 #define PLATFORM_SUBTYPE_MDM	1
 #define PLATFORM_SUBTYPE_SGLTE	6
 
+#if defined(CONFIG_AMAZON_METRICS_LOG)
+void __iomem *sw_wd_reg_addr(void);
+#endif
+
 enum msm_cpu {
 	MSM_CPU_UNKNOWN = 0,
 	MSM_CPU_7X01,

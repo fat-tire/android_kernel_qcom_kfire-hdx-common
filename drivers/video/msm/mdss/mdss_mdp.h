@@ -39,6 +39,7 @@
 #define MAX_DOWNSCALE_RATIO	4
 #define MAX_UPSCALE_RATIO	20
 #define MAX_DECIMATION		4
+#define MAX_FREE_LIST_SIZE	12
 
 #define C3_ALPHA	3	/* alpha */
 #define C2_R_Cr		2	/* R/Cr */
@@ -268,6 +269,7 @@ struct mdss_ad_info {
 	struct mutex lock;
 	struct work_struct calc_work;
 	struct msm_fb_data_type *mfd;
+	struct msm_fb_data_type *bl_mfd;
 	struct mdss_mdp_vsync_handler handle;
 	struct completion comp;
 	u32 last_str;
@@ -358,6 +360,7 @@ struct mdss_mdp_writeback_arg {
 struct mdss_overlay_private {
 	int vsync_pending;
 	ktime_t vsync_time;
+	struct sysfs_dirent *vsync_event_sd;
 	int borderfill_enable;
 	int overlay_play_enable;
 	int hw_refresh;
@@ -370,12 +373,15 @@ struct mdss_overlay_private {
 	struct list_head overlay_list;
 	struct list_head pipes_used;
 	struct list_head pipes_cleanup;
-	struct work_struct vsync_work;
 	struct list_head rot_proc_list;
 	bool mixer_swap;
 	u32 splash_mem_addr;
 	u32 splash_mem_size;
+
 	int ad_state;
+
+	struct mdss_mdp_data free_list[MAX_FREE_LIST_SIZE];
+	int free_list_size;
 };
 
 struct mdss_mdp_perf_params {
@@ -484,33 +490,18 @@ int mdss_mdp_smp_setup(struct mdss_data_type *mdata, u32 cnt, u32 size);
 
 int mdss_hw_init(struct mdss_data_type *mdata);
 
-int mdss_mdp_pa_config(struct mdss_mdp_ctl *ctl,
-				struct mdp_pa_cfg_data *config,
-				u32 *copyback);
-int mdss_mdp_pcc_config(struct mdss_mdp_ctl *ctl,
-				struct mdp_pcc_cfg_data *cfg_ptr,
-				u32 *copyback);
-int mdss_mdp_igc_lut_config(struct mdss_mdp_ctl *ctl,
-				struct mdp_igc_lut_data *config,
-				u32 *copyback, u32 copy_from_kernel);
-int mdss_mdp_argc_config(struct mdss_mdp_ctl *ctl,
-				struct mdp_pgc_lut_data *config,
-				u32 *copyback);
-int mdss_mdp_hist_lut_config(struct mdss_mdp_ctl *ctl,
-				struct mdp_hist_lut_data *config,
-				u32 *copyback);
-int mdss_mdp_dither_config(struct mdss_mdp_ctl *ctl,
-				struct mdp_dither_cfg_data *config,
-				u32 *copyback);
-int mdss_mdp_gamut_config(struct mdss_mdp_ctl *ctl,
-				struct mdp_gamut_cfg_data *config,
-				u32 *copyback);
+int mdss_mdp_pa_config(struct mdp_pa_cfg_data *config, u32 *copyback);
+int mdss_mdp_pcc_config(struct mdp_pcc_cfg_data *cfg_ptr, u32 *copyback);
+int mdss_mdp_igc_lut_config(struct mdp_igc_lut_data *config, u32 *copyback,
+				u32 copy_from_kernel);
+int mdss_mdp_argc_config(struct mdp_pgc_lut_data *config, u32 *copyback);
+int mdss_mdp_hist_lut_config(struct mdp_hist_lut_data *config, u32 *copyback);
+int mdss_mdp_dither_config(struct mdp_dither_cfg_data *config, u32 *copyback);
+int mdss_mdp_gamut_config(struct mdp_gamut_cfg_data *config, u32 *copyback);
 
-int mdss_mdp_histogram_start(struct mdss_mdp_ctl *ctl,
-				struct mdp_histogram_start_req *req);
-int mdss_mdp_histogram_stop(struct mdss_mdp_ctl *ctl, u32 block);
-int mdss_mdp_hist_collect(struct mdss_mdp_ctl *ctl,
-				struct mdp_histogram_data *hist);
+int mdss_mdp_histogram_start(struct mdp_histogram_start_req *req);
+int mdss_mdp_histogram_stop(u32 block);
+int mdss_mdp_hist_collect(struct mdp_histogram_data *hist);
 void mdss_mdp_hist_intr_done(u32 isr);
 
 int mdss_mdp_ad_config(struct msm_fb_data_type *mfd,
@@ -575,6 +566,9 @@ int mdss_mdp_pipe_is_staged(struct mdss_mdp_pipe *pipe);
 int mdss_mdp_wb_set_format(struct msm_fb_data_type *mfd, u32 dst_format);
 int mdss_mdp_wb_get_format(struct msm_fb_data_type *mfd,
 					struct mdp_mixer_cfg *mixer_cfg);
+
+int mdss_mdp_wb_set_secure(struct msm_fb_data_type *mfd, int enable);
+int mdss_mdp_wb_get_secure(struct msm_fb_data_type *mfd, uint8_t *enable);
 
 #define mfd_to_mdp5_data(mfd) (mfd->mdp.private1)
 #define mfd_to_mdata(mfd) (((struct mdss_overlay_private *)\

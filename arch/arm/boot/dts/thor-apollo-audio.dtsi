@@ -51,7 +51,7 @@
 	        qcom,taiko-mclk-clk-freq = <9600000>;
 
 	        qcom,ext-spk-amp-gpio = <&pm8841_mpps 1 0>;
-
+	        qcom,ext-spk-amp-boost-supply = <&pm8941_chg_boost>;
 	        maxim,max97236-extclk-gpios = <&pm8941_gpios 16 0>;
 	        max97236-extclk-clk = <&pm8941_clkdiv2>;
 	        maxim,max97236-extclk-freq = <1200000>;
@@ -64,13 +64,6 @@
                 qcom,cdc-micbias2-ext-cap;
                 qcom,cdc-micbias3-ext-cap;
                 qcom,cdc-micbias4-ext-cap;
-
-                /* If boot isn't available, vph_pwr_vreg can be used instead */
-                cdc-vdd-spkdrv-supply = <&pm8941_boost>;
-                qcom,cdc-vdd-spkdrv-voltage = <5000000 5000000>;
-                qcom,cdc-vdd-spkdrv-current = <1250000>;
-
-                qcom,cdc-on-demand-supplies = "cdc-vdd-spkdrv";
         };
 };
 

@@ -24,6 +24,9 @@
 #include <linux/nmi.h>
 #include <linux/dmi.h>
 #include <linux/coresight.h>
+#if defined(CONFIG_AMAZON_METRICS_LOG)
+#include <linux/qpnp/power-on.h>
+#endif
 
 #define PANIC_TIMER_STEP 100
 #define PANIC_BLINK_SPD 18
@@ -139,7 +142,9 @@ void panic(const char *fmt, ...)
 
 	if (!panic_blink)
 		panic_blink = no_blink;
-
+#if defined(CONFIG_AMAZON_METRICS_LOG)
+	qpnp_pon_record_sw_wd();
+#endif
 	if (panic_timeout > 0) {
 		/*
 		 * Delay timeout seconds before rebooting the machine.

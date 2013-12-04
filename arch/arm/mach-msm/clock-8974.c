@@ -787,7 +787,6 @@ static DEFINE_CLK_VOTER(pnoc_msmbus_clk, &pnoc_clk.c, LONG_MAX);
 static DEFINE_CLK_VOTER(snoc_msmbus_clk, &snoc_clk.c, LONG_MAX);
 static DEFINE_CLK_VOTER(cnoc_msmbus_clk, &cnoc_clk.c, LONG_MAX);
 static DEFINE_CLK_VOTER(pnoc_msmbus_a_clk, &pnoc_a_clk.c, LONG_MAX);
-static DEFINE_CLK_VOTER(pnoc_pm_clk, &pnoc_clk.c, LONG_MAX);
 static DEFINE_CLK_VOTER(snoc_msmbus_a_clk, &snoc_a_clk.c, LONG_MAX);
 static DEFINE_CLK_VOTER(cnoc_msmbus_a_clk, &cnoc_a_clk.c, LONG_MAX);
 
@@ -799,6 +798,7 @@ static DEFINE_CLK_VOTER(ocmemgx_msmbus_clk, &ocmemgx_clk.c, LONG_MAX);
 static DEFINE_CLK_VOTER(ocmemgx_msmbus_a_clk, &ocmemgx_a_clk.c, LONG_MAX);
 static DEFINE_CLK_VOTER(ocmemgx_core_clk, &ocmemgx_clk.c, LONG_MAX);
 
+static DEFINE_CLK_VOTER(pnoc_keepalive_a_clk, &pnoc_a_clk.c, LONG_MAX);
 static DEFINE_CLK_VOTER(pnoc_sps_clk, &pnoc_clk.c, 0);
 
 static DEFINE_CLK_BRANCH_VOTER(cxo_otg_clk, &cxo_clk_src.c);
@@ -2608,6 +2608,9 @@ static struct clk_freq_tbl ftbl_ocmemnoc_clk[] = {
 	F_END
 };
 
+static DEFINE_CLK_VOTER(boot_axi_clk_src, &axi_clk_src.c, 150000000);
+static DEFINE_CLK_VOTER(axi_msmbus_clk_src, &axi_clk_src.c, 150000000);
+
 static struct clk_freq_tbl ftbl_ocmemnoc_v2_clk[] = {
 	F_MM( 19200000,    cxo,   1,   0,   0),
 	F_MM( 37500000,  gpll0,  16,   0,   0),
@@ -4202,7 +4205,7 @@ static struct branch_clk mmss_s0_axi_clk = {
 	.has_sibling = 0,
 	.base = &virt_bases[MMSS_BASE],
 	.c = {
-		.parent = &axi_clk_src.c,
+		.parent = &axi_msmbus_clk_src.c,
 		.dbg_name = "mmss_s0_axi_clk",
 		.ops = &clk_ops_branch,
 		CLK_INIT(mmss_s0_axi_clk.c),
@@ -4559,6 +4562,13 @@ struct measure_mux_entry measure_mux[] = {
 
 	{&dummy_clk,				N_BASES,   0x0000},
 };
+
+#if defined(CONFIG_AMAZON_METRICS_LOG)
+void __iomem *sw_wd_reg_addr()
+{
+	return virt_bases[GCC_BASE];
+}
+#endif
 
 static int measure_clk_set_parent(struct clk *c, struct clk *parent)
 {
@@ -4949,6 +4959,8 @@ static struct clk_lookup msm_clocks_8974[] = {
 
 	/* Multimedia clocks */
 	CLK_LOOKUP("bus_clk_src", axi_clk_src.c, ""),
+	CLK_LOOKUP("bus_clk_src", boot_axi_clk_src.c, ""),
+	CLK_LOOKUP("bus_clk_src", axi_msmbus_clk_src.c, ""),
 	CLK_LOOKUP("bus_clk", mmss_mmssnoc_axi_clk.c, ""),
 	CLK_LOOKUP("bus_clk", mmssnoc_ahb_clk.c, ""),
 	CLK_LOOKUP("core_clk", mdss_edpaux_clk.c, "fd923400.qcom,mdss_edp"),
@@ -5232,6 +5244,7 @@ static struct clk_lookup msm_clocks_8974[] = {
 	CLK_LOOKUP("core_clk", gcc_prng_ahb_clk.c, "msm_rng"),
 
 	CLK_LOOKUP("dfab_clk", pnoc_sps_clk.c, "msm_sps"),
+    CLK_LOOKUP("bus_clk", pnoc_keepalive_a_clk.c, ""),
 
 	CLK_LOOKUP("bus_clk", snoc_clk.c, ""),
 	CLK_LOOKUP("bus_clk", pnoc_clk.c, ""),
@@ -5249,7 +5262,6 @@ static struct clk_lookup msm_clocks_8974[] = {
 	CLK_LOOKUP("bus_clk",	snoc_msmbus_clk.c,	"msm_sys_noc"),
 	CLK_LOOKUP("bus_a_clk",	snoc_msmbus_a_clk.c,	"msm_sys_noc"),
 	CLK_LOOKUP("bus_clk",	pnoc_msmbus_clk.c,	"msm_periph_noc"),
-	CLK_LOOKUP("bus_clk",   pnoc_pm_clk.c,      "pm_8x60"),
 	CLK_LOOKUP("bus_a_clk",	pnoc_msmbus_a_clk.c,	"msm_periph_noc"),
 	CLK_LOOKUP("mem_clk",	bimc_msmbus_clk.c,	"msm_bimc"),
 	CLK_LOOKUP("mem_a_clk",	bimc_msmbus_a_clk.c,	"msm_bimc"),
@@ -5560,6 +5572,12 @@ static void __init msm8974_clock_post_init(void)
 	 */
 	clk_set_rate(&mmssnoc_ahb_a_clk.c, 40000000);
 	clk_prepare_enable(&mmssnoc_ahb_a_clk.c);
+
+    /*
+     * Hold an active set vote for the PNOC AHB source. Sleep set vote is 0.
+     */
+    clk_set_rate(&pnoc_keepalive_a_clk.c, 19200000);
+    clk_prepare_enable(&pnoc_keepalive_a_clk.c);
 
 	/*
 	 * Hold an active set vote for CXO; this is because CXO is expected

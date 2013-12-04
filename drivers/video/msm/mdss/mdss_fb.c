@@ -61,7 +61,6 @@
 #define MAX_FBI_LIST 32
 static struct fb_info *fbi_list[MAX_FBI_LIST];
 static int fbi_list_index;
-
 //If these callbacks are defined, call the defined suspend/resume
 // handlers such that the touch turns off before the display blanks
 // and the touch turns on after the display unblanks
@@ -237,6 +236,16 @@ static void mdss_fb_remove_sysfs(struct msm_fb_data_type *mfd)
 	sysfs_remove_group(&mfd->fbi->dev->kobj, &mdss_fb_attr_group);
 }
 
+static void mdss_fb_shutdown(struct platform_device *pdev)
+{
+	struct msm_fb_data_type *mfd = platform_get_drvdata(pdev);
+
+	for (; mfd->ref_cnt > 1; mfd->ref_cnt--)
+		pm_runtime_put(mfd->fbi->dev);
+
+	mdss_fb_release(mfd->fbi, 0);
+}
+
 static int mdss_fb_probe(struct platform_device *pdev)
 {
 	struct msm_fb_data_type *mfd = NULL;
@@ -270,7 +279,9 @@ static int mdss_fb_probe(struct platform_device *pdev)
 	mfd->index = fbi_list_index;
 	mfd->mdp_fb_page_protection = MDP_FB_PAGE_PROTECTION_WRITECOMBINE;
 
+	mfd->ext_ad_ctrl = -1;
 	mfd->bl_level = 0;
+	mfd->curr_bl_lvl = 0;
 	mfd->bl_scale = 1024;
 	mfd->bl_min_lvl = 30;
 	mfd->fb_imgType = MDP_RGBA_8888;
@@ -517,6 +528,7 @@ static struct platform_driver mdss_fb_driver = {
 	.remove = mdss_fb_remove,
 	.suspend = mdss_fb_suspend,
 	.resume = mdss_fb_resume,
+	.shutdown = mdss_fb_shutdown,
 	.driver = {
 		.name = "mdss_fb",
 		.of_match_table = mdss_fb_dt_match,
@@ -545,7 +557,12 @@ static void mdss_fb_scale_bl(struct msm_fb_data_type *mfd, u32 *bl_lvl)
 void mdss_fb_set_backlight(struct msm_fb_data_type *mfd, u32 bkl_lvl)
 {
 	struct mdss_panel_data *pdata;
+	int (*update_ad_input)(struct msm_fb_data_type *mfd);
 	u32 temp = bkl_lvl;
+	mfd->curr_bl_lvl = bkl_lvl;
+
+	pr_debug("%s bkl_lvl = %d mfd->bl_level_old = %d \n",
+		__func__, bkl_lvl, mfd->bl_level_old);
 
 	if ((!mfd->panel_power_on || !mfd->bl_updated) &&
 	    !IS_CALIB_MODE_BL(mfd)) {
@@ -572,14 +589,16 @@ void mdss_fb_set_backlight(struct msm_fb_data_type *mfd, u32 bkl_lvl)
 			mfd->bl_level = bkl_lvl;
 			return;
 		}
+		
 		pdata->set_backlight(pdata, temp);
 		mfd->bl_level = bkl_lvl;
 		mfd->bl_level_old = temp;
 
 		if (mfd->mdp.update_ad_input) {
+			update_ad_input = mfd->mdp.update_ad_input;
 			mutex_unlock(&mfd->bl_lock);
 			/* Will trigger ad_setup which will grab bl_lock */
-			mfd->mdp.update_ad_input(mfd);
+			update_ad_input(mfd);
 			mutex_lock(&mfd->bl_lock);
 		}
 	}
@@ -607,7 +626,7 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 {
 	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
 	int ret = 0;
-
+	int tmp_bl_lvl = 0;
 	if (!op_enable)
 		return -EPERM;
 
@@ -617,6 +636,13 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 			ret = mfd->mdp.on_fnc(mfd);
 			if (ret == 0)
 				mfd->panel_power_on = true;
+
+			mutex_lock(&mfd->bl_lock);
+			if(!mfd->bl_updated){
+				mfd->bl_updated = 1;
+				mdss_fb_set_backlight(mfd, mfd->curr_bl_lvl);
+			}
+			mutex_unlock(&mfd->bl_lock);
 
 			mutex_lock(&mfd->update.lock);
 			mfd->update.type = NOTIFY_TYPE_UPDATE;
@@ -641,8 +667,14 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 
 			mfd->op_enable = false;
 			curr_pwr_state = mfd->panel_power_on;
+
+			mutex_lock(&mfd->bl_lock);
+			tmp_bl_lvl = mfd->curr_bl_lvl;
+			mdss_fb_set_backlight(mfd, 0);
 			mfd->panel_power_on = false;
 			mfd->bl_updated = 0;
+			mfd->curr_bl_lvl = tmp_bl_lvl;
+			mutex_unlock(&mfd->bl_lock);
 
 			ret = mfd->mdp.off_fnc(mfd);
 			if (ret)
@@ -1070,7 +1102,8 @@ static int mdss_fb_open(struct fb_info *info, int user)
 		result = mdss_fb_blank_sub(FB_BLANK_UNBLANK, info,
 					   mfd->op_enable);
 		if (result) {
-			pr_err("mdss_fb_open: can't turn on display!\n");
+			pr_err("can't turn on fb%d! rc=%d\n", mfd->index,
+				result);
 			return result;
 		}
 	}
@@ -1124,7 +1157,7 @@ static int mdss_fb_release(struct fb_info *info, int user)
 		ret = mdss_fb_blank_sub(FB_BLANK_POWERDOWN, info,
 				       mfd->op_enable);
 		if (ret) {
-			pr_err("can't turn off display!\n");
+			pr_err("can't turn off fb%d! rc=%d\n", mfd->index, ret);
 			return ret;
 		}
 	}
@@ -1168,8 +1201,8 @@ void mdss_fb_wait_for_fence(struct msm_fb_data_type *mfd)
 					WAIT_FENCE_FINAL_TIMEOUT);
 		}
 		if (ret < 0) {
-			pr_err("%s: sync_fence_wait failed! ret = %x\n",
-				__func__, ret);
+			pr_err("%s: sync_fence_wait failed! index:%d acq_fen_cnt:%d ret = %x\n",
+				__func__, i, mfd->acq_fen_cnt, ret);
 			break;
 		}
 		sync_fence_put(mfd->acq_fen[i]);

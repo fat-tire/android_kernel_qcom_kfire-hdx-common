@@ -25,6 +25,8 @@
 #include "mdss.h"
 #include "mdss_dsi.h"
 
+#define VSYNC_PERIOD 17
+
 static struct mdss_dsi_ctrl_pdata *left_ctrl_pdata;
 
 static struct mdss_dsi_ctrl_pdata *ctrl_list[DSI_CTRL_MAX];
@@ -88,6 +90,7 @@ void mdss_dsi_clk_ctrl(struct mdss_dsi_ctrl_pdata *ctrl, int enable)
 	mutex_lock(&ctrl->mutex);
 	if (enable) {
 		if (ctrl->clk_cnt == 0) {
+			mdss_dsi_enable_bus_clocks(ctrl);
 			mdss_dsi_prepare_clocks(ctrl);
 			mdss_dsi_clk_enable(ctrl);
 		}
@@ -98,6 +101,7 @@ void mdss_dsi_clk_ctrl(struct mdss_dsi_ctrl_pdata *ctrl, int enable)
 			if (ctrl->clk_cnt == 0) {
 				mdss_dsi_clk_disable(ctrl);
 				mdss_dsi_unprepare_clocks(ctrl);
+				mdss_dsi_disable_bus_clocks(ctrl);
 			}
 		}
 	}
@@ -792,6 +796,8 @@ void mdss_dsi_host_init(struct mipi_panel_info *pinfo,
 
 	pinfo->rgb_swap = DSI_RGB_SWAP_RGB;
 
+        ctrl_pdata->panel_mode = pinfo->mode;
+
 	if (pinfo->mode == DSI_VIDEO_MODE) {
 		data = 0;
 		if (pinfo->pulse_mode_hsa_he)
@@ -1158,6 +1164,8 @@ int mdss_dsi_cmd_reg_tx(u32 data,
 	return 4;
 }
 
+static int mdss_dsi_wait4video_eng_busy(struct mdss_dsi_ctrl_pdata *ctrl);
+
 static int mdss_dsi_cmd_dma_tx(struct mdss_dsi_ctrl_pdata *ctrl,
 					struct dsi_buf *tp);
 
@@ -1170,7 +1178,7 @@ static int mdss_dsi_cmds2buf_tx(struct mdss_dsi_ctrl_pdata *ctrl,
 	struct dsi_buf *tp;
 	struct dsi_cmd_desc *cm;
 	struct dsi_ctrl_hdr *dchdr;
-	int len, tot = 0;
+        int len, wait, tot = 0;
 
 	tp = &ctrl->tx_buf;
 	mdss_dsi_buf_init(tp);
@@ -1183,9 +1191,20 @@ static int mdss_dsi_cmds2buf_tx(struct mdss_dsi_ctrl_pdata *ctrl,
 		tot += len;
 		if (dchdr->last) {
 			tp->data = tp->start; /* begin of buf */
+
+			wait = mdss_dsi_wait4video_eng_busy(ctrl);
+
 			mdss_dsi_enable_irq(ctrl, DSI_CMD_TERM);
-			mdss_dsi_cmd_dma_tx(ctrl, tp);
-			if (dchdr->wait)
+			len = mdss_dsi_cmd_dma_tx(ctrl, tp);
+
+			if (IS_ERR_VALUE(len)) {
+				mdss_dsi_disable_irq(ctrl, DSI_CMD_TERM);
+				pr_err("%s: failed to call cmd_dma_tx for cmd = 0x%x\n",
+						__func__,  cmds->payload[0]);
+				return -EINVAL;
+			}
+
+			if (!wait || dchdr->wait > VSYNC_PERIOD)
 				usleep(dchdr->wait * 1000);
 
 			mdss_dsi_buf_init(tp);
@@ -1478,8 +1497,46 @@ static int mdss_dsi_cmd_dma_rx(struct mdss_dsi_ctrl_pdata *ctrl,
 	return rlen;
 }
 
-#define VSYNC_PERIOD 17
+void mdss_dsi_wait4video_done(struct mdss_dsi_ctrl_pdata *ctrl)
+{
+	unsigned long flag;
+		u32 data;
 
+	/* DSI_INTL_CTRL */
+	data = MIPI_INP((ctrl->ctrl_base) + 0x0110);
+	data |= DSI_INTR_VIDEO_DONE_MASK;
+
+	MIPI_OUTP((ctrl->ctrl_base) + 0x0110, data);
+
+	spin_lock_irqsave(&ctrl->mdp_lock, flag);
+	INIT_COMPLETION(ctrl->video_comp);
+	mdss_dsi_enable_irq(ctrl, DSI_VIDEO_TERM);
+	spin_unlock_irqrestore(&ctrl->mdp_lock, flag);
+
+	wait_for_completion_timeout(&ctrl->video_comp,
+		msecs_to_jiffies(VSYNC_PERIOD * 4));
+
+	data = MIPI_INP((ctrl->ctrl_base) + 0x0110);
+	data &= ~DSI_INTR_VIDEO_DONE_MASK;
+	MIPI_OUTP((ctrl->ctrl_base) + 0x0110, data);
+}
+
+static int mdss_dsi_wait4video_eng_busy(struct mdss_dsi_ctrl_pdata *ctrl)
+{
+	int ret = 0;
+
+	if (ctrl->panel_mode == DSI_CMD_MODE)
+		return ret;
+
+	if (ctrl->ctrl_state & CTRL_STATE_MDP_ACTIVE) {
+		mdss_dsi_wait4video_done(ctrl);
+	/* delay 4 ms to skip BLLP */
+	usleep(4000);
+	ret = 1;
+	}
+
+	return ret;
+}
 
 void mdss_dsi_cmd_mdp_start(struct mdss_dsi_ctrl_pdata *ctrl)
 {

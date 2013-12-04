@@ -27,7 +27,6 @@
 #include <linux/input.h>
 #include <linux/workqueue.h>
 #include <linux/slab.h>
-#include <linux/cpumask.h>
 #include <linux/atomic.h>
 #include <linux/debugfs.h>
 #include <linux/trapz.h>
@@ -68,6 +67,7 @@ static unsigned int min_sampling_rate;
 
 #define POWERSAVE_BIAS_MAXLEVEL			(1000)
 #define POWERSAVE_BIAS_MINLEVEL			(-1000)
+#define LAST_INPUT_BOOST			5
 
 static void do_dbs_timer(struct work_struct *work);
 static int cpufreq_governor_dbs(struct cpufreq_policy *policy,
@@ -113,6 +113,7 @@ struct cpu_dbs_info_s {
 	wait_queue_head_t sync_wq;
 	atomic_t src_sync_cpu;
 	atomic_t sync_enabled;
+	atomic_t input_start;
 };
 static DEFINE_PER_CPU(struct cpu_dbs_info_s, od_cpu_dbs_info);
 
@@ -131,16 +132,11 @@ static struct workqueue_struct *dbs_wq;
 struct dbs_work_struct {
 	struct work_struct work;
 	unsigned int cpu;
+	int input_hold;
 };
 
-struct dbs_cpu_boost {
-	struct work_struct work;
-	atomic_t initialized;
-} dbs_cpu_boost_work = {
-	.initialized = ATOMIC_INIT(1)
-};
-
-static u32 enable_core_boost;
+static struct dentry *iboost_dir;
+static u32 input_hold_count = 1;	/* Count for input hold */
 
 static DEFINE_PER_CPU(struct dbs_work_struct, dbs_refresh_work);
 
@@ -359,6 +355,7 @@ static void update_sampling_rate(unsigned int new_rate)
 	dbs_tuners_ins.sampling_rate = new_rate
 				     = max(new_rate, min_sampling_rate);
 
+	get_online_cpus();
 	for_each_online_cpu(cpu) {
 		struct cpufreq_policy *policy;
 		struct cpu_dbs_info_s *dbs_info;
@@ -393,6 +390,7 @@ static void update_sampling_rate(unsigned int new_rate)
 		}
 		mutex_unlock(&dbs_info->timer_mutex);
 	}
+	put_online_cpus();
 }
 
 static ssize_t store_sampling_rate(struct kobject *a, struct attribute *b,
@@ -885,6 +883,11 @@ static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 	if (policy->cur == policy->min)
 		return;
 
+	/* If we just had an input event, return */
+	if (atomic_read(&this_dbs_info->input_start) > 0) {
+		atomic_dec(&this_dbs_info->input_start);
+		return;
+	}
 	/*
 	 * The optimal frequency is the frequency that is the lowest that
 	 * can support the current CPU usage without triggering the up
@@ -1017,11 +1020,14 @@ static void dbs_refresh_callback(struct work_struct *work)
 	struct cpu_dbs_info_s *this_dbs_info;
 	struct dbs_work_struct *dbs_work;
 	unsigned int cpu;
+	int input_hold;
 
 	dbs_work = container_of(work, struct dbs_work_struct, work);
 	cpu = dbs_work->cpu;
+
+	input_hold = dbs_work->input_hold;
 	TRAPZ_DESCRIBE(TRAPZ_KERN_CPU, input_wq, "Input boost workqueue");
-	TRAPZ_LOG(TRAPZ_LOG_INFO, 0, TRAPZ_KERN_CPU, input_wq, 0, 0, 0, 0);
+	TRAPZ_LOG_BEGIN(TRAPZ_LOG_INFO, 0, TRAPZ_KERN_CPU, input_wq);
 
 	get_online_cpus();
 
@@ -1030,6 +1036,9 @@ static void dbs_refresh_callback(struct work_struct *work)
 
 	this_dbs_info = &per_cpu(od_cpu_dbs_info, cpu);
 	policy = this_dbs_info->cur_policy;
+	if (input_hold)
+		atomic_set(&this_dbs_info->input_start, input_hold_count);
+
 	if (!policy) {
 		/* CPU not using ondemand governor */
 		goto bail_incorrect_governor;
@@ -1047,7 +1056,6 @@ static void dbs_refresh_callback(struct work_struct *work)
 		this_dbs_info->prev_cpu_idle = get_cpu_idle_time(cpu,
 				&this_dbs_info->prev_cpu_wall);
 	}
-	this_dbs_info->rate_mult = dbs_tuners_ins.sampling_down_factor * 2;
 
 bail_incorrect_governor:
 	unlock_policy_rwsem_write(cpu);
@@ -1055,7 +1063,7 @@ bail_incorrect_governor:
 bail_acq_sema_failed:
 	put_online_cpus();
 
-	TRAPZ_LOG(TRAPZ_LOG_INFO, 0, TRAPZ_KERN_CPU, input_wq, 0, 0, 0, 1);
+	TRAPZ_LOG_END(TRAPZ_LOG_INFO, 0, TRAPZ_KERN_CPU, input_wq);
 	return;
 }
 
@@ -1163,28 +1171,13 @@ bail_acq_sema_failed:
 	return 0;
 }
 
-static void __ref handle_core_boost(struct work_struct *work)
-{
-	unsigned int cpu;
-
-	for_each_possible_cpu(cpu) {
-		if (!cpu_online(cpu)) {
-			TRAPZ_DESCRIBE(TRAPZ_KERN_CPU,
-				bring_cpu_up, "Bring up CPU");
-			TRAPZ_LOG(TRAPZ_LOG_DEBUG, 0, TRAPZ_KERN_CPU,
-				bring_cpu_up, cpu, 0, 0, 0);
-			cpu_up(cpu);
-			queue_work_on(cpu, dbs_wq, &per_cpu(dbs_refresh_work, cpu).work);
-		}
-	}
-}
-
 static void dbs_input_event(struct input_handle *handle, unsigned int type,
 		unsigned int code, int value)
 {
+	static unsigned long last_j;
 	int i;
+	int ihold = 0;
 
-	TRAPZ_DESCRIBE(TRAPZ_KERN_CPU, input_cb, "Got input event");
 
 	if ((dbs_tuners_ins.powersave_bias == POWERSAVE_BIAS_MAXLEVEL) ||
 		(dbs_tuners_ins.powersave_bias == POWERSAVE_BIAS_MINLEVEL)) {
@@ -1192,13 +1185,14 @@ static void dbs_input_event(struct input_handle *handle, unsigned int type,
 		return;
 	}
 
-	/* For select input, bring up additional cores */
-	if (enable_core_boost)
-		if ((type == EV_ABS) && (code == ABS_MT_TRACKING_ID) && (value == -1))
-			queue_work_on(0, dbs_wq, &(dbs_cpu_boost_work.work));
+	if (time_after(jiffies, (last_j + LAST_INPUT_BOOST)))
+		ihold = 1;
+	last_j = jiffies;
 
-	for_each_online_cpu(i)
+	for_each_online_cpu(i) {
+		per_cpu(dbs_refresh_work, i).input_hold = ihold;
 		queue_work_on(i, dbs_wq, &per_cpu(dbs_refresh_work, i).work);
+	}
 }
 
 static int dbs_input_connect(struct input_handler *handler,
@@ -1428,14 +1422,13 @@ static int __init cpufreq_gov_dbs_init(void)
 		this_dbs_info->sync_thread = kthread_run(dbs_sync_thread,
 							 (void *)i,
 							 "dbs_sync/%d", i);
+		atomic_set(&this_dbs_info->input_start, 0);
 	}
 
-	/* Init work for cpu online boost */
-	if (atomic_dec_and_test(&dbs_cpu_boost_work.initialized))
-		INIT_WORK(&(dbs_cpu_boost_work.work), handle_core_boost);
-
-	enable_core_boost = 1;
-	debugfs_create_bool("enable_core_boost", 0777, NULL, &enable_core_boost);
+	/* Initialize debugfs entries for input boost functionality */
+	iboost_dir = debugfs_create_dir("iboost", NULL);
+	debugfs_create_u32("input_hold_count", 0644,
+				iboost_dir, &input_hold_count);
 	return cpufreq_register_governor(&cpufreq_gov_ondemand);
 }
 

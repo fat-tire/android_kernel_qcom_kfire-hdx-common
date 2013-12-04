@@ -148,7 +148,7 @@ union srs_trumedia_params_u {
 };
 static union srs_trumedia_params_u msm_srs_trumedia_params[2];
 static int srs_port_id = -1;
-static bool is_custom_stereo_on; /* set to false by default */
+bool is_custom_stereo_on; /* set to false by default */
 
 static void srs_send_params(int port_id, unsigned int techs,
 		int param_block_idx)
@@ -264,11 +264,7 @@ static int fe_dai_map[MSM_FRONTEND_DAI_MM_SIZE][2] = {
 };
 
 static int send_stereo_to_custom_stereo_cmd(int port_id,
-					    unsigned int session_id,
-					    uint16_t op_FL_ip_FL_weight,
-					    uint16_t op_FL_ip_FR_weight,
-					    uint16_t op_FR_ip_FL_weight,
-					    uint16_t op_FR_ip_FR_weight)
+					    unsigned int session_id)
 {
 	char *params_value;
 	int *update_params_value32, rc = 0;
@@ -304,12 +300,18 @@ static int send_stereo_to_custom_stereo_cmd(int port_id,
 	*update_params_value16++ = PCM_CHANNEL_FL;
 	*update_params_value16++ = PCM_CHANNEL_FR;
 
-	/* weighting coefficients as name suggests,
-	mixing will be done according to these coefficients*/
-	*update_params_value16++ = op_FL_ip_FL_weight;
-	*update_params_value16++ = op_FL_ip_FR_weight;
-	*update_params_value16++ = op_FR_ip_FL_weight;
-	*update_params_value16++ = op_FR_ip_FR_weight;
+	/* mixing will be done according to these coefficients*/
+	if (is_custom_stereo_on) {
+		*update_params_value16++ = Q14_GAIN_ZERO_POINT_FIVE;
+		*update_params_value16++ = Q14_GAIN_ZERO_POINT_FIVE;
+		*update_params_value16++ = Q14_GAIN_ZERO_POINT_FIVE;
+		*update_params_value16++ = Q14_GAIN_ZERO_POINT_FIVE;
+	} else {
+		*update_params_value16++ = Q14_GAIN_UNITY;
+		*update_params_value16++ = 0;
+		*update_params_value16++ = 0;
+		*update_params_value16++ = Q14_GAIN_UNITY;
+	}
 
 	if (params_length) {
 		rc = adm_set_stereo_to_custom_stereo(port_id,
@@ -360,14 +362,14 @@ static void msm_pcm_routing_build_matrix(int fedai_id, int dspst_id,
 			payload.num_copps, payload.copp_ids, 0, perf_mode);
 		if ((path_type == ADM_PATH_PLAYBACK) && !perf_mode &&
 		     is_custom_stereo_on) {
-			for (itr = 0; itr < payload.num_copps; itr++)
-				send_stereo_to_custom_stereo_cmd(
-						payload.copp_ids[itr],
-						dspst_id,
-						Q14_GAIN_ZERO_POINT_FIVE,
-						Q14_GAIN_ZERO_POINT_FIVE,
-						Q14_GAIN_ZERO_POINT_FIVE,
-						Q14_GAIN_ZERO_POINT_FIVE);
+			for (itr = 0; itr < payload.num_copps; itr++) {
+				if ((payload.copp_ids[itr] == SLIMBUS_0_RX) ||
+				(payload.copp_ids[itr] == RT_PROXY_PORT_001_RX)) {
+					send_stereo_to_custom_stereo_cmd(
+							payload.copp_ids[itr],
+							dspst_id);
+				}
+			}
 		}
 	}
 }
@@ -485,11 +487,16 @@ void msm_pcm_routing_reg_phy_stream(int fedai_id, bool perf_mode,
 			port_id = srs_port_id = msm_bedais[i].port_id;
 			srs_send_params(srs_port_id, 1, 0);
 			if ((DOLBY_ADM_COPP_TOPOLOGY_ID == topology) &&
-			    (!perf_mode))
+			    (!perf_mode)) {
 				if (dolby_dap_init(port_id,
 						msm_bedais[i].channel) < 0)
 					pr_err("%s: Err init dolby dap\n",
 						__func__);
+				if (dolby_dap_set_custom_stereo_onoff(
+						port_id) < 0)
+					pr_err("%s: Err setting dap custom stereo\n",
+						__func__);
+			}
 		}
 	}
 	if (payload.num_copps) {
@@ -497,14 +504,14 @@ void msm_pcm_routing_reg_phy_stream(int fedai_id, bool perf_mode,
 			payload.num_copps, payload.copp_ids, 0, perf_mode);
 		if ((path_type == ADM_PATH_PLAYBACK) && !perf_mode &&
 		     is_custom_stereo_on) {
-			for (itr = 0; itr < payload.num_copps; itr++)
-				send_stereo_to_custom_stereo_cmd(
+			for (itr = 0; itr < payload.num_copps; itr++) {
+				if ((payload.copp_ids[itr] == SLIMBUS_0_RX) ||
+				(payload.copp_ids[itr] == RT_PROXY_PORT_001_RX)) {
+					send_stereo_to_custom_stereo_cmd(
 						payload.copp_ids[itr],
-						dspst_id,
-						Q14_GAIN_ZERO_POINT_FIVE,
-						Q14_GAIN_ZERO_POINT_FIVE,
-						Q14_GAIN_ZERO_POINT_FIVE,
-						Q14_GAIN_ZERO_POINT_FIVE);
+						dspst_id);
+				}
+			}
 		}
 	}
 	mutex_unlock(&routing_lock);
@@ -632,10 +639,15 @@ static void msm_pcm_routing_process_audio(u16 reg, u16 val, int set)
 			port_id = srs_port_id = msm_bedais[reg].port_id;
 			srs_send_params(srs_port_id, 1, 0);
 			if ((DOLBY_ADM_COPP_TOPOLOGY_ID == topology) &&
-			    (!perf_mode))
+			    (!perf_mode)) {
 				if (dolby_dap_init(port_id, channels) < 0)
 					pr_err("%s: Err init dolby dap\n",
 						__func__);
+				if (dolby_dap_set_custom_stereo_onoff(
+					port_id) < 0)
+					pr_err("%s: Err setting dap custom stereo\n",
+						__func__);
+			}
 		}
 	} else {
 		if (test_bit(val, &msm_bedais[reg].fe_sessions) &&
@@ -2587,24 +2599,24 @@ static int msm_routing_put_stereo_to_custom_stereo_control(
 				if (is_custom_stereo_on) {
 					rc = send_stereo_to_custom_stereo_cmd(
 						msm_bedais[be_index].port_id,
-						session_id,
-						Q14_GAIN_ZERO_POINT_FIVE,
-						Q14_GAIN_ZERO_POINT_FIVE,
-						Q14_GAIN_ZERO_POINT_FIVE,
-						Q14_GAIN_ZERO_POINT_FIVE);
+						session_id);
 				} else {
 					rc = send_stereo_to_custom_stereo_cmd(
 						msm_bedais[be_index].port_id,
-						session_id,
-						Q14_GAIN_UNITY,
-						0,
-						0,
-						Q14_GAIN_UNITY);
+						session_id);
 				}
+				if (dolby_dap_set_vspe_vdhe(
+					msm_bedais[be_index].port_id) < 0)
+					pr_err("%s: Err setting vspe/vdhe\n",
+						__func__);
+				if (dolby_dap_set_custom_stereo_onoff(
+					msm_bedais[be_index].port_id) < 0)
+					pr_err("%s: Err setting custom stereo\n",
+						__func__);
 skip_send_custom_stereo:
 				if (rc)
-					pr_err("%s custom stero mixing set failed\n",
-						__func__);
+					pr_err("%s custom stero mixing set \
+						failed\n",__func__);
 			}
 		}
 	}
@@ -3724,10 +3736,15 @@ static int msm_pcm_routing_prepare(struct snd_pcm_substream *substream)
 			port_id = srs_port_id = bedai->port_id;
 			srs_send_params(srs_port_id, 1, 0);
 			if ((DOLBY_ADM_COPP_TOPOLOGY_ID == topology) &&
-			    (!perf_mode))
+			    (!perf_mode)) {
 				if (dolby_dap_init(port_id, channels) < 0)
 					pr_err("%s: Err init dolby dap\n",
 						__func__);
+				if (dolby_dap_set_custom_stereo_onoff(
+					port_id) < 0)
+					pr_err("%s: Err setting dap custom stereo\n",
+						__func__);
+			}
 		}
 	}
 

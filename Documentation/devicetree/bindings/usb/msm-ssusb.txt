@@ -47,6 +47,9 @@ Optional properties :
 		bits 20-25 PARAMETER_OVERRIDE_D
 - qcom,skip-charger-detection: If present then charger detection using BC1.2
   is not supported and attached host should always be assumed as SDP.
+- qcom,vbus-sensing: If present, vbus is not routed to USB controller/phy
+  and phy is configured to sense vbus and enable pull-up resistor explicitly
+  before starting controller using usbcmd run/stop bit.
 
 Sub nodes:
 - Sub node for "DWC3- USB3 controller".

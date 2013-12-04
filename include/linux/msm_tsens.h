@@ -40,6 +40,7 @@ struct tsens_device {
 };
 
 int32_t tsens_get_temp(struct tsens_device *dev, unsigned long *temp);
+int tsens_get_warm_temp_threshold(struct tsens_device *device, unsigned long *temp);
 int msm_tsens_early_init(struct tsens_platform_data *pdata);
 
 #if defined(CONFIG_THERMAL_TSENS8974)

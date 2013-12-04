@@ -268,7 +268,7 @@ void mdss_dsi_panel_reset(struct mdss_panel_data *pdata, int enable)
 		wmb();
 
 		gpio_set_value((ctrl_pdata->disp_en_gpio), 1);
-		udelay(1000);
+		udelay(1200);
 		wmb();
 
 		gpio_set_value((ctrl_pdata->disp_lcd_en_gpio), 1);
@@ -480,7 +480,7 @@ static int mdss_dsi_parse_dcs_cmds(struct device_node *np,
 	bp = buf;
 	len = blen;
 	cnt = 0;
-	while (len > sizeof(*dchdr)) {
+	while (len >= sizeof(*dchdr)) {
 		dchdr = (struct dsi_ctrl_hdr *)bp;
 		dchdr->dlen = ntohs(dchdr->dlen);
 		if (dchdr->dlen > len) {

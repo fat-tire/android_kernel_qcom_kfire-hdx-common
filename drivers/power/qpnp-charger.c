@@ -144,6 +144,9 @@ extern int bq27541_get_property_backdoor(
 
 #define QPNP_CHARGER_DEV_NAME	"qcom,qpnp-charger"
 
+#define SMBB_BOOST_BOOST_VSET	0x1541
+#define BOOST_4DOT5VOLT			0x16
+
 /* Status bits and masks */
 #define CHGR_BOOT_DONE			BIT(7)
 #define CHGR_CHG_EN			BIT(7)
@@ -2961,7 +2964,9 @@ qpnp_charger_probe(struct spmi_device *spmi)
 	struct resource *resource;
 	struct spmi_resource *spmi_resource;
 	int rc = 0;
-
+#if defined(CONFIG_ARCH_MSM8974_THOR)
+	u8 value = 0x00;
+#endif
 	pr_info("\n");
 
 	chip = kzalloc(sizeof *chip, GFP_KERNEL);
@@ -3271,6 +3276,12 @@ qpnp_charger_probe(struct spmi_device *spmi)
 	if (rc) {
 		pr_err("failed to disable sw BMS\n");
 	}
+#endif
+
+#if defined(CONFIG_ARCH_MSM8974_THOR)
+	pr_info("Set voltage boost to 4.5 V\n");
+	value = BOOST_4DOT5VOLT;
+	spmi_ext_register_writel(spmi->ctrl, 0, SMBB_BOOST_BOOST_VSET, &value, 1);
 #endif
 
 	pr_info("success chg_dis = %d, bpd = %d, usb = %d, dc = %d b_health = %d batt_present = %d\n",

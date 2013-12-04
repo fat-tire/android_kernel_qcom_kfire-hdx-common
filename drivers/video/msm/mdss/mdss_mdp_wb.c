@@ -123,6 +123,15 @@ struct mdss_mdp_data *mdss_mdp_wb_debug_buffer(struct msm_fb_data_type *mfd)
 }
 #endif
 
+int mdss_mdp_wb_get_secure(struct msm_fb_data_type *mfd, uint8_t * enabled)
+{
+	struct mdss_mdp_wb *wb = mfd_to_wb(mfd);
+	if(!wb)
+		return -EINVAL;
+	*enabled = wb->is_secure;
+	return 0;
+}
+
 int mdss_mdp_wb_set_secure(struct msm_fb_data_type *mfd, int enable)
 {
 	struct mdss_mdp_wb *wb = mfd_to_wb(mfd);
@@ -131,6 +140,10 @@ int mdss_mdp_wb_set_secure(struct msm_fb_data_type *mfd, int enable)
 	struct mdss_mdp_mixer *mixer;
 
 	pr_debug("setting secure=%d\n", enable);
+	if(enable > 1) {
+		pr_err("Invalid enable value = %d",enable);
+		return -EINVAL;
+	}
 
 	ctl->is_secure = enable;
 	wb->is_secure = enable;
@@ -435,7 +448,7 @@ static int is_buffer_ready(struct mdss_mdp_wb *wb)
 }
 
 static int mdss_mdp_wb_dequeue(struct msm_fb_data_type *mfd,
-				struct msmfb_data *data)
+				struct msmfb_data *data, int local)
 {
 	struct mdss_mdp_wb *wb = mfd_to_wb(mfd);
 	struct mdss_mdp_wb_data *node = NULL;
@@ -467,6 +480,8 @@ static int mdss_mdp_wb_dequeue(struct msm_fb_data_type *mfd,
 		memcpy(data, &node->buf_info, sizeof(*data));
 
 		buf = &node->buf_data.p[0];
+		if(!local)
+			mdss_mdp_put_img(buf);
 		pr_debug("found node addr=%x len=%d\n", buf->addr, buf->len);
 	} else {
 		pr_debug("node is NULL, wait for next\n");
@@ -636,7 +651,7 @@ int mdss_mdp_wb_ioctl_handler(struct msm_fb_data_type *mfd, u32 cmd,
 		break;
 	case MSMFB_WRITEBACK_DEQUEUE_BUFFER:
 		if (!copy_from_user(&data, arg, sizeof(data))) {
-			ret = mdss_mdp_wb_dequeue(mfd, arg);
+			ret = mdss_mdp_wb_dequeue(mfd, arg, false);
 		} else {
 			pr_err("wb dequeue buf failed on copy_from_user\n");
 			ret = -EFAULT;
@@ -689,7 +704,7 @@ int msm_fb_writeback_dequeue_buffer(struct fb_info *info,
 	if (!mfd)
 		return -ENODEV;
 
-	return mdss_mdp_wb_dequeue(mfd, data);
+	return mdss_mdp_wb_dequeue(mfd, data, true);
 }
 EXPORT_SYMBOL(msm_fb_writeback_dequeue_buffer);
 

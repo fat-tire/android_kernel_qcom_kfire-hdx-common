@@ -418,6 +418,33 @@ int tsens_get_max_sensor_num(uint32_t *tsens_num_sensors)
 }
 EXPORT_SYMBOL(tsens_get_max_sensor_num);
 
+
+int tsens_get_warm_temp_threshold(struct tsens_device *device, unsigned long *temp)
+{
+	unsigned int reg;
+	int sensor_sw_id = -EINVAL, rc = 0;
+
+	if (!tmdev)
+		return -ENODEV;
+
+	reg = readl_relaxed(TSENS_S0_UPPER_LOWER_STATUS_CTRL_ADDR
+						(tmdev->tsens_addr) +
+			(device->sensor_num * TSENS_SN_ADDR_OFFSET));
+
+	reg = (reg & TSENS_UPPER_THRESHOLD_MASK) >>
+			TSENS_UPPER_THRESHOLD_SHIFT;
+
+	rc = tsens_get_sw_id_mapping(device->sensor_num, &sensor_sw_id);
+	if (rc < 0) {
+		pr_err("tsens mapping index not found\n");
+		return rc;
+	}
+	*temp = tsens_tz_code_to_degc(reg, sensor_sw_id);
+
+	return 0;
+}
+EXPORT_SYMBOL(tsens_get_warm_temp_threshold);
+
 static int tsens_tz_get_mode(struct thermal_zone_device *thermal,
 			      enum thermal_device_mode *mode)
 {
@@ -656,6 +683,15 @@ static void tsens_scheduler_fn(struct work_struct *work)
 			lower_thr = true;
 		}
 		if (upper_thr || lower_thr) {
+			unsigned long temp;
+			enum thermal_trip_type trip =
+					THERMAL_TRIP_CONFIGURABLE_LOW;
+
+			if (upper_thr)
+				trip = THERMAL_TRIP_CONFIGURABLE_HI;
+			tsens_tz_get_temp(tm->sensor[i].tz_dev, &temp);
+			thermal_sensor_trip(tm->sensor[i].tz_dev, trip, temp);
+
 			/* Notify user space */
 			queue_work(tm->tsens_wq, &tm->sensor[i].work);
 			rc = tsens_get_sw_id_mapping(
@@ -663,11 +699,12 @@ static void tsens_scheduler_fn(struct work_struct *work)
 					&sensor_sw_id);
 			if (rc < 0)
 				pr_err("tsens mapping index not found\n");
-			pr_debug("sensor:%d trigger temp (%d degC)\n",
-				tm->sensor[i].sensor_hw_num,
-				tsens_tz_code_to_degc((status &
-				TSENS_SN_STATUS_TEMP_MASK),
-				sensor_sw_id));
+			if (tsens_tz_code_to_degc((status & TSENS_SN_STATUS_TEMP_MASK), sensor_sw_id) >= 95)
+				pr_info("sensor:%d trigger temp (%d degC)\n",
+					tm->sensor[i].sensor_hw_num,
+					tsens_tz_code_to_degc((status &
+					TSENS_SN_STATUS_TEMP_MASK),
+					sensor_sw_id));
 		}
 	}
 	mb();

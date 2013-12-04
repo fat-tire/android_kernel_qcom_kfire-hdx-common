@@ -152,6 +152,13 @@ MODULE_PARM_DESC(prop_chg_detect, "Enable Proprietary charger detection");
 #define SS_CR_PROTOCOL_READ_REG     (QSCRATCH_REG_OFFSET + 0x4C)
 #define SS_CR_PROTOCOL_WRITE_REG    (QSCRATCH_REG_OFFSET + 0x50)
 
+/* VBUS sensing config registers */
+
+#define HS_PHY_CTRL_VBUSVLDEXT0		BIT(13)
+#define HS_PHY_CTRL_VBUSVLDEXTSEL0	BIT(14)
+#define HS_PHY_CTRL_UTMI_OTG_VBUS_VALID	BIT(20)
+#define SS_PHY_CTRL_LANE0_PWR_PRESENT	BIT(24)
+
 struct dwc3_msm_req_complete {
 	struct list_head list_item;
 	struct usb_request *req;
@@ -1028,6 +1035,45 @@ int msm_register_usb_ext_notification(struct usb_ext_notification *info)
 	return 0;
 }
 EXPORT_SYMBOL(msm_register_usb_ext_notification);
+
+static void dwc3_msm_config_vbus_sensing(bool enable)
+{
+	struct dwc3_msm *msm = context;
+
+	dev_dbg(msm->dev, "%s: enable  = %d\n", __func__, enable);
+
+	if (!enable)
+		goto disable_vbus_sensing;
+
+	/* Set External VBUS Valid Select */
+	dwc3_msm_write_readback(msm->base, HS_PHY_CTRL_REG,
+		HS_PHY_CTRL_VBUSVLDEXTSEL0, HS_PHY_CTRL_VBUSVLDEXTSEL0);
+	/* Enable dp pull up resistor */
+	dwc3_msm_write_readback(msm->base, HS_PHY_CTRL_REG,
+			HS_PHY_CTRL_VBUSVLDEXT0, HS_PHY_CTRL_VBUSVLDEXT0);
+	/* VBUS output valid from phy to USB3.0 Controller */
+	dwc3_msm_write_readback(msm->base, HS_PHY_CTRL_REG,
+			HS_PHY_CTRL_UTMI_OTG_VBUS_VALID,
+			HS_PHY_CTRL_UTMI_OTG_VBUS_VALID);
+	/* VBUS indication from HS phy to SS phy */
+	dwc3_msm_write_readback(msm->base, SS_PHY_CTRL_REG,
+			SS_PHY_CTRL_LANE0_PWR_PRESENT,
+			SS_PHY_CTRL_LANE0_PWR_PRESENT);
+
+	return;
+
+disable_vbus_sensing:
+
+	/* Disable dp pull up resistor */
+	dwc3_msm_write_readback(msm->base, HS_PHY_CTRL_REG,
+			HS_PHY_CTRL_VBUSVLDEXT0, 0);
+	/* Clear VBUS indication from HS phy to SS phy */
+	dwc3_msm_write_readback(msm->base, SS_PHY_CTRL_REG,
+			SS_PHY_CTRL_LANE0_PWR_PRESENT, 0);
+	/* Clear VBUS output valid from phy to USB3.0 Controller */
+	dwc3_msm_write_readback(msm->base, HS_PHY_CTRL_REG,
+			HS_PHY_CTRL_UTMI_OTG_VBUS_VALID, 0);
+}
 
 /* HSPHY */
 static int dwc3_hsusb_config_vddcx(int high)
@@ -2646,6 +2692,12 @@ static int __devinit dwc3_msm_probe(struct platform_device *pdev)
 				goto put_xcvr;
 			}
 		}
+
+		if (of_property_read_bool(node, "qcom,vbus-sensing") &&
+				msm->ext_xceiv.otg_capability)
+			msm->ext_xceiv.config_vbus_sensing =
+				dwc3_msm_config_vbus_sensing;
+
 		if (msm->ext_xceiv.otg_capability)
 			msm->ext_xceiv.ext_block_reset = dwc3_msm_block_reset;
 		ret = dwc3_set_ext_xceiv(msm->otg_xceiv->otg, &msm->ext_xceiv);

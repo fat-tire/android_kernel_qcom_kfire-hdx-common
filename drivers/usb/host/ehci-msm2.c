@@ -39,6 +39,7 @@
 #include <mach/clk.h>
 #include <mach/msm_xo.h>
 #include <mach/msm_iomap.h>
+#include <mach/rpm-regulator.h>
 
 #define MSM_USB_BASE (hcd->regs)
 
@@ -78,6 +79,7 @@ struct msm_hcd {
 	int					wakeup_gpio;
 	int					wakeup_irq;
 	unsigned long				flags;
+	enum usb_vdd_type			vdd_type;
 };
 
 bool wan_present(void)
@@ -115,26 +117,87 @@ static inline struct usb_hcd *mhcd_to_hcd(struct msm_hcd *mhcd)
 #define HSUSB_PHY_1P8_VOL_MAX		1800000 /* uV */
 #define HSUSB_PHY_1P8_HPM_LOAD		50000	/* uA */
 
+#define HSUSB_PHY_VDD_DIG_VOL_NONE	0	/* uV */
 #define HSUSB_PHY_VDD_DIG_VOL_MIN	1045000	/* uV */
 #define HSUSB_PHY_VDD_DIG_VOL_MAX	1320000	/* uV */
 #define HSUSB_PHY_VDD_DIG_LOAD		49360	/* uA */
 
+#define HSUSB_PHY_SUSP_DIG_VOL_P50  500000
+#define HSUSB_PHY_SUSP_DIG_VOL_P75  750000
+enum hsusb_vdd_value {
+	VDD_MIN_NONE = 0,
+	VDD_MIN_P50,
+	VDD_MIN_P75,
+	VDD_MIN_OP,
+	VDD_MAX_OP,
+	VDD_VAL_MAX_OP,
+};
+
+static int hsusb_vdd_val[VDD_TYPE_MAX][VDD_VAL_MAX_OP] = {
+		{   /* VDD_CX CORNER Voting */
+			[VDD_MIN_NONE]	= RPM_VREG_CORNER_NONE,
+			[VDD_MIN_P50]	= RPM_VREG_CORNER_NONE,
+			[VDD_MIN_P75]	= RPM_VREG_CORNER_NONE,
+			[VDD_MIN_OP]	= RPM_VREG_CORNER_NOMINAL,
+			[VDD_MAX_OP]	= RPM_VREG_CORNER_HIGH,
+		},
+		{   /* VDD_CX Voltage Voting */
+			[VDD_MIN_NONE]	= HSUSB_PHY_VDD_DIG_VOL_NONE,
+			[VDD_MIN_P50]	= HSUSB_PHY_SUSP_DIG_VOL_P50,
+			[VDD_MIN_P75]	= HSUSB_PHY_SUSP_DIG_VOL_P75,
+			[VDD_MIN_OP]	= HSUSB_PHY_VDD_DIG_VOL_MIN,
+			[VDD_MAX_OP]	= HSUSB_PHY_VDD_DIG_VOL_MAX,
+		},
+};
+
 static int msm_ehci_init_vddcx(struct msm_hcd *mhcd, int init)
 {
 	int ret = 0;
+	int none_vol, min_vol, max_vol;
+	u32 tmp[5];
+	int len = 0;
 
-	if (!init)
+	if (!init) {
+		none_vol = hsusb_vdd_val[mhcd->vdd_type][VDD_MIN_NONE];
+		max_vol = hsusb_vdd_val[mhcd->vdd_type][VDD_MAX_OP];
 		goto disable_reg;
-
-	mhcd->hsusb_vddcx = devm_regulator_get(mhcd->dev, "HSUSB_VDDCX");
-	if (IS_ERR(mhcd->hsusb_vddcx)) {
-		dev_err(mhcd->dev, "unable to get ehci vddcx\n");
-		return PTR_ERR(mhcd->hsusb_vddcx);
 	}
 
-	ret = regulator_set_voltage(mhcd->hsusb_vddcx,
-			HSUSB_PHY_VDD_DIG_VOL_MIN,
-			HSUSB_PHY_VDD_DIG_VOL_MAX);
+	mhcd->vdd_type = VDDCX_CORNER;
+	mhcd->hsusb_vddcx = devm_regulator_get(mhcd->dev, "hsusb_vdd_dig");
+	if (IS_ERR(mhcd->hsusb_vddcx)) {
+		mhcd->hsusb_vddcx = devm_regulator_get(mhcd->dev,
+							"HSUSB_VDDCX");
+		if (IS_ERR(mhcd->hsusb_vddcx)) {
+			dev_err(mhcd->dev, "unable to get ehci vddcx\n");
+			return PTR_ERR(mhcd->hsusb_vddcx);
+		}
+		mhcd->vdd_type = VDDCX;
+	}
+
+	if (mhcd->dev->of_node) {
+		of_get_property(mhcd->dev->of_node,
+				"qcom,vdd-voltage-level",
+				&len);
+		if (len == sizeof(tmp)) {
+			of_property_read_u32_array(mhcd->dev->of_node,
+					"qcom,vdd-voltage-level",
+					tmp, len/sizeof(*tmp));
+			hsusb_vdd_val[mhcd->vdd_type][VDD_MIN_NONE] = tmp[0];
+			hsusb_vdd_val[mhcd->vdd_type][VDD_MIN_P50] = tmp[1];
+			hsusb_vdd_val[mhcd->vdd_type][VDD_MIN_P75] = tmp[2];
+			hsusb_vdd_val[mhcd->vdd_type][VDD_MIN_OP] = tmp[3];
+			hsusb_vdd_val[mhcd->vdd_type][VDD_MAX_OP] = tmp[4];
+		} else {
+			dev_dbg(mhcd->dev, "Use default vdd config\n");
+		}
+	}
+
+	none_vol = hsusb_vdd_val[mhcd->vdd_type][VDD_MIN_NONE];
+	min_vol = hsusb_vdd_val[mhcd->vdd_type][VDD_MIN_OP];
+	max_vol = hsusb_vdd_val[mhcd->vdd_type][VDD_MAX_OP];
+
+	ret = regulator_set_voltage(mhcd->hsusb_vddcx, min_vol, max_vol);
 	if (ret) {
 		dev_err(mhcd->dev, "unable to set the voltage"
 				"for ehci vddcx\n");
@@ -162,8 +225,7 @@ disable_reg:
 reg_enable_err:
 	regulator_set_optimum_mode(mhcd->hsusb_vddcx, 0);
 reg_optimum_mode_err:
-	regulator_set_voltage(mhcd->hsusb_vddcx, 0,
-				HSUSB_PHY_VDD_DIG_VOL_MIN);
+	regulator_set_voltage(mhcd->hsusb_vddcx, none_vol, max_vol);
 	return ret;
 
 }
@@ -213,24 +275,22 @@ put_3p3_lpm:
 }
 
 #ifdef CONFIG_PM_SLEEP
-#define HSUSB_PHY_SUSP_DIG_VOL_P50  500000
-#define HSUSB_PHY_SUSP_DIG_VOL_P75  750000
 static int msm_ehci_config_vddcx(struct msm_hcd *mhcd, int high)
 {
 	struct msm_usb_host_platform_data *pdata;
-	int max_vol = HSUSB_PHY_VDD_DIG_VOL_MAX;
+	int max_vol = hsusb_vdd_val[mhcd->vdd_type][VDD_MAX_OP];
 	int min_vol;
 	int ret;
 
 	pdata = mhcd->dev->platform_data;
 
 	if (high)
-		min_vol = HSUSB_PHY_VDD_DIG_VOL_MIN;
+		min_vol = hsusb_vdd_val[mhcd->vdd_type][VDD_MIN_OP];
 	else if (pdata && pdata->dock_connect_irq &&
 			!irq_read_line(pdata->dock_connect_irq))
-		min_vol = HSUSB_PHY_SUSP_DIG_VOL_P75;
+		min_vol = hsusb_vdd_val[mhcd->vdd_type][VDD_MIN_P75];
 	else
-		min_vol = HSUSB_PHY_SUSP_DIG_VOL_P50;
+		min_vol = hsusb_vdd_val[mhcd->vdd_type][VDD_MIN_P50];
 
 	ret = regulator_set_voltage(mhcd->hsusb_vddcx, min_vol, max_vol);
 	if (ret) {
@@ -448,6 +508,9 @@ static int msm_ulpi_read(struct msm_hcd *mhcd, u32 reg)
 		if (time_after(jiffies, timeout)) {
 			dev_err(mhcd->dev, "msm_ulpi_read: timeout %08x\n",
 				readl_relaxed(USB_ULPI_VIEWPORT));
+			dev_err(mhcd->dev, "PORTSC: %08x USBCMD: %08x\n",
+				readl_relaxed(USB_PORTSC),
+				readl_relaxed(USB_USBCMD));
 			return -ETIMEDOUT;
 		}
 		udelay(1);
@@ -472,6 +535,9 @@ static int msm_ulpi_write(struct msm_hcd *mhcd, u32 val, u32 reg)
 	while (readl_relaxed(USB_ULPI_VIEWPORT) & ULPI_RUN) {
 		if (time_after(jiffies, timeout)) {
 			dev_err(mhcd->dev, "msm_ulpi_write: timeout\n");
+			dev_err(mhcd->dev, "PORTSC: %08x USBCMD: %08x\n",
+				readl_relaxed(USB_PORTSC),
+				readl_relaxed(USB_USBCMD));
 			return -ETIMEDOUT;
 		}
 		udelay(1);
@@ -523,13 +589,12 @@ static int msm_ehci_phy_reset(struct msm_hcd *mhcd)
 	struct msm_usb_host_platform_data *pdata;
 	u32 val;
 	int ret;
-	int retries;
 
 	ret = msm_ehci_link_clk_reset(mhcd, 1);
 	if (ret)
 		return ret;
 
-	usleep_range(10, 12);
+	usleep_range(10000, 12000);
 
 	ret = msm_ehci_link_clk_reset(mhcd, 0);
 	if (ret)
@@ -543,27 +608,33 @@ static int msm_ehci_phy_reset(struct msm_hcd *mhcd)
 	val = readl_relaxed(USB_PORTSC) & ~PORTSC_PTS_MASK;
 	writel_relaxed(val | PORTSC_PTS_ULPI, USB_PORTSC);
 
-	for (retries = 3; retries > 0; retries--) {
-		ret = msm_ulpi_write(mhcd, ULPI_FUNC_CTRL_SUSPENDM,
-				ULPI_CLR(ULPI_FUNC_CTRL));
-		if (!ret)
-			break;
-	}
-	if (!retries)
-		return -ETIMEDOUT;
-
-	/* Wakeup the PHY with a reg-access for calibration */
-	for (retries = 3; retries > 0; retries--) {
-		ret = msm_ulpi_read(mhcd, ULPI_DEBUG);
-		if (ret != -ETIMEDOUT)
-			break;
-	}
-	if (!retries)
-		return -ETIMEDOUT;
-
 	dev_info(mhcd->dev, "phy_reset: success\n");
 
 	return 0;
+}
+
+static void usb_phy_reset(struct msm_hcd *mhcd)
+{
+	struct usb_hcd *hcd = mhcd_to_hcd(mhcd);
+	u32 val;
+
+	/* Assert USB PHY_PON */
+	val =  readl_relaxed(USB_PHY_CTRL2);
+	val &= ~PHY_POR_BIT_MASK;
+	val |= PHY_POR_ASSERT;
+	writel_relaxed(val, USB_PHY_CTRL2);
+
+	/* wait for minimum 10 microseconds as suggested in HPG. */
+	usleep_range(10, 15);
+
+	/* Deassert USB PHY_PON */
+	val =  readl_relaxed(USB_PHY_CTRL2);
+	val &= ~PHY_POR_BIT_MASK;
+	val |= PHY_POR_DEASSERT;
+	writel_relaxed(val, USB_PHY_CTRL2);
+
+	/* Ensure that RESET operation is completed. */
+	mb();
 }
 
 #define LINK_RESET_TIMEOUT_USEC		(250 * 1000)
@@ -600,6 +671,9 @@ static int msm_hsusb_reset(struct msm_hcd *mhcd)
 		writel_relaxed(readl_relaxed(USB_PHY_CTRL2) | (1<<16),
 								USB_PHY_CTRL2);
 
+	/* Reset USB PHY after performing USB Link RESET */
+	usb_phy_reset(mhcd);
+
 	msleep(100);
 
 	writel_relaxed(0x0, USB_AHBBURST);
@@ -634,11 +708,16 @@ static void msm_ehci_phy_susp_fail_work(struct work_struct *w)
 					phy_susp_fail_work);
 	struct usb_hcd *hcd = mhcd_to_hcd(mhcd);
 
+	pm_runtime_disable(mhcd->dev);
+
 	msm_ehci_vbus_power(mhcd, 0);
 	usb_remove_hcd(hcd);
 	msm_hsusb_reset(mhcd);
 	usb_add_hcd(hcd, hcd->irq, IRQF_SHARED);
 	msm_ehci_vbus_power(mhcd, 1);
+
+	pm_runtime_set_active(mhcd->dev);
+	pm_runtime_enable(mhcd->dev);
 }
 
 #define PHY_SUSP_TIMEOUT_MSEC	500
@@ -741,8 +820,6 @@ static int msm_ehci_suspend(struct msm_hcd *mhcd)
 	}
 
 	msm_ehci_config_vddcx(mhcd, 0);
-	if(!wan_present())
-		msm_ehci_ldo_enable(mhcd, 0);
 
 	atomic_set(&mhcd->in_lpm, 1);
 	enable_irq(hcd->irq);
@@ -824,8 +901,6 @@ static int msm_ehci_resume(struct msm_hcd *mhcd)
 	clk_prepare_enable(mhcd->iface_clk);
 
 	msm_ehci_config_vddcx(mhcd, 1);
-	if(!wan_present())
-		msm_ehci_ldo_enable(mhcd, 1);
 
 	if (mhcd->flags & ALLOW_EHCI_RETENTION) {
 		u32 phy_ctrl_val;
@@ -1317,6 +1392,10 @@ static int __devinit ehci_msm2_probe(struct platform_device *pdev)
 
 	dev_info(&pdev->dev, "ehci_msm2 probe\n");
 
+	/* If there is no WAN device present, we don't need to start the EHCI stack */
+	if(!wan_present())
+		return -ENODEV;
+
 	if (pdev->dev.of_node) {
 		dev_dbg(&pdev->dev, "device tree enabled\n");
 		pdev->dev.platform_data = ehci_msm2_dt_to_pdata(pdev);
@@ -1665,10 +1744,6 @@ static int ehci_msm2_pm_resume(struct device *dev)
 
 	if (device_may_wakeup(dev))
 		disable_irq_wake(hcd->irq);
-
-	/* We only need to resume if MDM device is present */
-	if(!wan_present())
-		return 0;
 
 	ret = msm_ehci_resume(mhcd);
 	if (ret)

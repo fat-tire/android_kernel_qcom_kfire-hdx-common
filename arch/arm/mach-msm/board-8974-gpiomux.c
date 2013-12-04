@@ -1143,6 +1143,7 @@ static struct msm_gpiomux_config msm8974_pri_ter_auxpcm_configs[] __initdata = {
 	},
 };
 
+#if !defined(CONFIG_ARCH_MSM8974_THOR) && !defined(CONFIG_ARCH_MSM8974_APOLLO) && !defined(CONFIG_ARCH_MSM8974_GALVAJEM)
 static struct msm_gpiomux_config msm8974_sec_auxpcm_configs[] __initdata = {
 	{
 		.gpio = 79,
@@ -1175,6 +1176,7 @@ static struct msm_gpiomux_config msm8974_sec_auxpcm_configs[] __initdata = {
 	},
 #endif
 };
+#endif
 
 static struct msm_gpiomux_config wcnss_5wire_interface[] = {
 	{
@@ -1541,8 +1543,10 @@ void __init msm_8974_init_gpiomux(void)
 		msm_gpiomux_install(msm8974_pri_pri_auxpcm_configs,
 				 ARRAY_SIZE(msm8974_pri_pri_auxpcm_configs));
 
+#if !defined(CONFIG_ARCH_MSM8974_THOR) && !defined(CONFIG_ARCH_MSM8974_APOLLO) && !defined(CONFIG_ARCH_MSM8974_GALVAJEM)
 	msm_gpiomux_install(msm8974_sec_auxpcm_configs,
 				 ARRAY_SIZE(msm8974_sec_auxpcm_configs));
+#endif
 
 #if defined(CONFIG_ARCH_MSM8974_THOR) || defined(CONFIG_ARCH_MSM8974_APOLLO)
         /* add for intergating ADI Prox sensor driver */

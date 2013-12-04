@@ -35,6 +35,12 @@ enum pon_trigger_source {
 	PON_KPDPWR_N,
 };
 
+#if defined(CONFIG_AMAZON_METRICS_LOG)
+int qpnp_pon_record_normpoff(void);
+int qpnp_pon_record_sw_wd(void);
+int qpnp_pon_system_pwr_off_metrics(void);
+#endif
+
 #ifdef CONFIG_QPNP_POWER_ON
 int qpnp_pon_system_pwr_off(bool reset);
 int qpnp_pon_is_warm_reset(void);

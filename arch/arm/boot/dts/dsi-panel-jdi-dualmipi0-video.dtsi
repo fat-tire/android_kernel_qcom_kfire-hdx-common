@@ -27,7 +27,7 @@
 		qcom,mdss-pan-dest = "display_1";
 		qcom,mdss-pan-broadcast-mode = <1>;
 		qcom,mdss-pan-porch-values = <80 12 164 4 4 12>;
-		qcom,mdss-pan-underflow-clr = <0xff>;
+		qcom,mdss-pan-underflow-clr = <0x00>;
 		qcom,mdss-pan-bl-ctrl = "bl_ctrl_wled";
 		qcom,mdss-pan-bl-levels = <1 255>;
 		qcom,mdss-pan-dsi-mode = <0>;

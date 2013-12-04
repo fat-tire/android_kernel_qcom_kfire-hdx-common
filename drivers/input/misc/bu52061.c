@@ -77,6 +77,11 @@ enum hall_type {
   NONE,
 };
 
+enum device_state {
+  BOOT = 0,
+  UP
+};
+
 struct hall_event_info {
   enum backlight_status bl_status;
   enum hall_status hall_current_status;
@@ -91,12 +96,20 @@ static struct hall_event_info gHallEventInfo[] =
     {BL_ON, HALL_CLOSED, 0, POWER,  BL_OFF},
 #else
     {BL_ON, HALL_CLOSED, 0, POWER,  BL_OFF},
-    {BL_ON, HALL_CLOSED, 0, NONE,   BL_OFF},
-    {BL_ON, HALL_CLOSED, 0, COVER, BL_OFF},
-    {BL_ON, HALL_CLOSED, 0, CAMERA,  BL_OFF},
+    {BL_ON, HALL_CLOSED, 1, NONE,   BL_OFF},
+    {BL_ON, HALL_CLOSED, 0, COVER,  BL_OFF},
+    {BL_ON, HALL_CLOSED, 0, CAMERA, BL_OFF},
 #endif
   };
 
+static const char *hall_name[] = {
+  "POWER",
+#ifdef CONFIG_ARCH_MSM8974_APOLLO
+  "NONE",
+  "COVER",
+  "CAMERA",
+#endif
+};
 static const char *WAKELOCK = "HallSensor 1200000000";
 //----------------------------------------------------
 #define BU52061_FTM_PORTING
@@ -122,6 +135,8 @@ static unsigned int *bu52061_count[] = {
   0,
 #endif
 };
+
+static enum device_state mState = BOOT;
 
 static int bu52061_read_proc(char *page, char **start, off_t off,
 		int count, int*eof, void *data)
@@ -263,29 +278,34 @@ static void hall_handle_event(int i)
   bu52061_count[i]++;
 #endif
 
-  printk(KERN_DEBUG "BU52061: hall_%d_current_status = %s\n", i,
+  printk(KERN_DEBUG "BU52061: %s hall_%d_current_status = %s\n", hall_name[i], i,
          gHallEventInfo[i].hall_current_status ? "HALL_OPENED" : "HALL_CLOSED");
-  printk(KERN_DEBUG "BU52061: gHallEventInfo[%d].bl_status = %s\n", i,
+  printk(KERN_DEBUG "BU52061: %s gHallEventInfo[%d].bl_status = %s\n", hall_name[i], i,
          gHallEventInfo[i].bl_status ? "BL_ON" : "BL_OFF");
 
   if (gHallEventInfo[i].ignore_hall_event == false) {
     switch(gHallEventInfo[i].type) {
     case POWER:
-      /*Hall sensor State Machine: only two cases need to send power key event:
-        1.close book-cover in Normal mode(BL_ON) 2.open book-cover in Suspend mode(BL_OFF) */
-      if (((gHallEventInfo[i].bl_status == BL_ON) && (gHallEventInfo[i].hall_current_status == HALL_CLOSED)) ||
-          ((gHallEventInfo[i].bl_status == BL_OFF) && (gHallEventInfo[i].hall_current_status == HALL_OPENED))) {
+#ifdef CONFIG_ARCH_MSM8974_APOLLO
+      if (gHallEventInfo[2].hall_current_status == HALL_CLOSED)
+#endif
+        {
+          /*Hall sensor State Machine: only two cases need to send power key event:
+            1.close book-cover in Normal mode(BL_ON) 2.open book-cover in Suspend mode(BL_OFF) */
+          if (((gHallEventInfo[i].bl_status == BL_ON) && (gHallEventInfo[i].hall_current_status == HALL_CLOSED)) ||
+              ((gHallEventInfo[i].bl_status == BL_OFF) && (gHallEventInfo[i].hall_current_status == HALL_OPENED))) {
 
-        if (gHallEventInfo[i].previous_bl_status != gHallEventInfo[i].bl_status) {
-          printk(KERN_INFO "BU52061: KEY_POWER = %s\n", gHallEventInfo[i].bl_status ? "OFF" : "ON");
-          gHallEventInfo[i].previous_bl_status = gHallEventInfo[i].bl_status;
-          input_report_key(dev, KEY_POWER, KEY_PRESSED);
-          input_sync(dev);
-          mdelay(20);
-          input_report_key(dev, KEY_POWER, KEY_RELEASED);
-          input_sync(dev);
+            if ((gHallEventInfo[i].previous_bl_status != gHallEventInfo[i].bl_status) || (mState == BOOT)) {
+              printk(KERN_INFO "BU52061: KEY_POWER = %s\n", gHallEventInfo[i].bl_status ? "OFF" : "ON");
+              gHallEventInfo[i].previous_bl_status = gHallEventInfo[i].bl_status;
+              input_report_key(dev, KEY_POWER, KEY_PRESSED);
+              input_sync(dev);
+              mdelay(20);
+              input_report_key(dev, KEY_POWER, KEY_RELEASED);
+              input_sync(dev);
+            }
+          }
         }
-      }
       break;
 
     case COVER:
@@ -549,6 +569,7 @@ static int __devinit bu52061_probe(struct platform_device *pdev)
 #endif
 
   g_bu52061_data->pdev = (&pdev->dev);
+  mState = BOOT;
   printk(KERN_INFO "BU52061 Probe OK\n");
   return 0;
 
@@ -619,19 +640,22 @@ static int bu52061_suspend(struct device *dev)
     gHallEventInfo[i].bl_status = BL_OFF;
     gHallEventInfo[i].previous_bl_status = BL_ON;
   }
+  mState = UP;
   printk(KERN_INFO "BU52061 bu52061_suspend\n");
   return 0;
 }
 
 static int bu52061_resume(struct device *dev)
 {
-  int i = 0;
-  for(i=0; i<MAX_SENSORS; i++){
-    gHallEventInfo[i].bl_status = BL_ON;
-    gHallEventInfo[i].previous_bl_status = BL_OFF;
-  }
-  printk(KERN_INFO "BU52061 bu52061_resume\n");
-  return 0;
+	int i = 0;
+	for (i = 0; i < MAX_SENSORS; i++) {
+		gHallEventInfo[i].bl_status = BL_ON;
+		gHallEventInfo[i].previous_bl_status = BL_OFF;
+		if (i == 2)
+			hall_handle_event(i);
+	}
+	printk(KERN_INFO "BU52061 bu52061_resume\n");
+	return 0;
 }
 
 #ifdef CONFIG_FB

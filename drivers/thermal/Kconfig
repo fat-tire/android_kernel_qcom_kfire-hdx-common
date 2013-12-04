@@ -73,6 +73,15 @@ config THERMAL_PM8XXX
 	  shifting over temperature shutdown control of the PMIC from hardware
 	  to software.
 
+config THERMAL_MONITOR_DEV_INTERFACE
+	bool "Implement the device interface for thermal monitor"
+	depends on THERMAL
+	help
+	  This creates all the device interfaces for the Kernel Thermal Monitor.
+	  It creates the ioctl interface, which can be used by the userspace
+	  applications to mitigate various devices using the Kernel Thermal
+	  Monitor.
+
 config THERMAL_MONITOR
 	bool "Monitor thermal state and limit CPU Frequency"
 	depends on THERMAL_TSENS8960 || THERMAL_TSENS8974

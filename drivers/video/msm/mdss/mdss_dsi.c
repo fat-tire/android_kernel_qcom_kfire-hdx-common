@@ -430,10 +430,18 @@ static int mdss_dsi_off(struct mdss_panel_data *pdata)
 
 	mdss_dsi_clk_ctrl(ctrl_pdata, 0);
 
-	mdss_dsi_disable_bus_clocks(ctrl_pdata);
+	ret = mdss_dsi_enable_bus_clocks(ctrl_pdata);
+	if (ret) {
+		pr_err("%s: failed to enable bus clocks. rc=%d\n", __func__,
+			ret);
+		mdss_dsi_panel_power_on(pdata, 0);
+		return ret;
+	}
 
 	/* disable DSI phy */
 	mdss_dsi_phy_enable(ctrl_pdata, 0);
+
+        mdss_dsi_disable_bus_clocks(ctrl_pdata);
 
 	ret = mdss_dsi_panel_power_on(pdata, 0);
 	if (ret) {
@@ -493,6 +501,7 @@ int mdss_dsi_on(struct mdss_panel_data *pdata)
 
 	mdss_dsi_phy_sw_reset((ctrl_pdata->ctrl_base));
 	mdss_dsi_phy_init(pdata);
+	mdss_dsi_disable_bus_clocks(ctrl_pdata);
 
 	mdss_dsi_clk_ctrl(ctrl_pdata, 1);
 
@@ -744,8 +753,7 @@ static int mdss_dsi_event_handler(struct mdss_panel_data *pdata,
 					 __func__, event, ctrl_pdata->ctrl_state);
 			mdss_dsi_ctrl_dsi_mode(false, EN_DSI_VIDEO_MODE,
 								   pdata);
-			mdss_dsi_clk_disable(ctrl_pdata);
-			mdss_dsi_disable_bus_clocks(ctrl_pdata);
+			mdss_dsi_clk_ctrl(ctrl_pdata, 0);
 			return rc;
 		}
 		if (ctrl_pdata->off_cmds.link_state == DSI_LP_MODE) {
@@ -774,8 +782,7 @@ static int mdss_dsi_event_handler(struct mdss_panel_data *pdata,
 		pr_debug("%s: FRAME_UPDATE event=%d\n", __func__, event);
 		if ((mipi->panel_psr_mode)
 			&& (ctrl_pdata->ctrl_state & CTRL_STATE_PANEL_PSR_ON)) {
-			mdss_dsi_enable_bus_clocks(ctrl_pdata);
-			mdss_dsi_clk_enable(ctrl_pdata);
+			mdss_dsi_clk_ctrl(ctrl_pdata, 1);
 			mdss_dsi_sw_reset(pdata);
 			mdss_dsi_ctrl_dsi_mode(true,
 					EN_DSI_VIDEO_MODE,
@@ -1013,7 +1020,7 @@ int dsi_panel_device_register(struct platform_device *pdev,
 	struct platform_device *ctrl_pdev = NULL;
 	bool broadcast;
 	bool cont_splash_enabled = false;
-
+	bool backlight_needs_reinit = false;
 	h_period = ((panel_data->panel_info.lcdc.h_pulse_width)
 			+ (panel_data->panel_info.lcdc.h_back_porch)
 			+ (panel_data->panel_info.xres)
@@ -1104,6 +1111,11 @@ int dsi_panel_device_register(struct platform_device *pdev,
 	if (broadcast)
 		ctrl_pdata->shared_pdata.broadcast_enable = 1;
 
+	backlight_needs_reinit = of_property_read_bool(pdev->dev.of_node,
+					  "qcom,mdss-backlight-reinit");
+
+	if (backlight_needs_reinit)
+		ctrl_pdata->backlight_reinit = 1;
 	ctrl_pdata->disp_en_gpio = of_get_named_gpio(pdev->dev.of_node,
 						     "qcom,enable-gpio", 0);
 	if (!gpio_is_valid(ctrl_pdata->disp_en_gpio)) {
@@ -1296,15 +1308,6 @@ int dsi_panel_device_register(struct platform_device *pdev,
 		rc = mdss_dsi_panel_power_on(&(ctrl_pdata->panel_data), 1);
 		if (rc) {
 			pr_err("%s: Panel power on failed\n", __func__);
-			return rc;
-		}
-
-		rc = mdss_dsi_enable_bus_clocks(ctrl_pdata);
-		if (rc) {
-			pr_err("%s: failed to enable bus clocks. rc=%d\n",
-				__func__, rc);
-			rc = mdss_dsi_panel_power_on(
-				&(ctrl_pdata->panel_data), 0);
 			return rc;
 		}
 

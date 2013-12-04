@@ -29,7 +29,6 @@
 #include <sound/q6afe-v2.h>
 
 #include "msm-dolby-dap-config.h"
-
 /* dolby endp based parameters */
 struct dolby_dap_endp_params_s {
 	int device;
@@ -356,9 +355,16 @@ static int dolby_dap_send_cached_params(int port_id, int commit)
 		*update_params_value++ = dolby_dap_params_length[i] *
 						sizeof(uint32_t);
 		index_offset = dolby_dap_params_offset[i];
-		for (j = 0; j < dolby_dap_params_length[i]; j++)
-			*update_params_value++ =
-				dolby_dap_params_value[index_offset+j];
+		for (j = 0; j < dolby_dap_params_length[i]; j++) {
+			if ((DOLBY_PARAM_ID_VDHE == dolby_dap_params_id[i]) &&
+				(DOLBY_PARAM_ID_VSPE == dolby_dap_params_id[i]) &&
+				is_custom_stereo_on &&
+			((port_id == SLIMBUS_0_RX) || (port_id == RT_PROXY_PORT_001_RX)))
+				*update_params_value++ = 0;
+			else
+				*update_params_value++ =
+					dolby_dap_params_value[index_offset+j];
+		}
 		params_length += (DOLBY_PARAM_PAYLOAD_SIZE +
 				dolby_dap_params_length[i]) * sizeof(uint32_t);
 	}
@@ -427,6 +433,91 @@ void dolby_dap_deinit(int port_id)
 	if ((dolby_dap_params_states.port_id == port_id) &&
 		(!dolby_dap_params_states.port_open_count))
 		dolby_dap_params_states.port_id = DOLBY_INVALID_PORT_ID;
+}
+
+int dolby_dap_set_vspe_vdhe(int port_id)
+{
+	char *params_value;
+	int *update_params_value, rc = 0;
+	uint32_t index_offset, i, j;
+	uint32_t params_length = (TOTAL_LENGTH_DOLBY_PARAM +
+				2 * DOLBY_PARAM_PAYLOAD_SIZE) *
+				sizeof(uint32_t);
+	if (port_id == DOLBY_INVALID_PORT_ID)
+		return -EINVAL;
+	params_value = kzalloc(params_length, GFP_KERNEL);
+	if (!params_value) {
+		pr_err("%s, params memory alloc failed\n", __func__);
+		return -ENOMEM;
+	}
+	update_params_value = (int *)params_value;
+	params_length = 0;
+	for (i = 0; i < 2; i++) {
+		*update_params_value++ = DOLBY_BUNDLE_MODULE_ID;
+		*update_params_value++ = dolby_dap_params_id[i];
+		*update_params_value++ = dolby_dap_params_length[i] *
+					sizeof(uint32_t);
+		index_offset = dolby_dap_params_offset[i];
+		for (j = 0; j < dolby_dap_params_length[i]; j++) {
+			if (is_custom_stereo_on)
+				*update_params_value++ = 0;
+			else
+				*update_params_value++ =
+					dolby_dap_params_value[index_offset+j];
+		}
+		params_length += (DOLBY_PARAM_PAYLOAD_SIZE +
+				dolby_dap_params_length[i]) * sizeof(uint32_t);
+	}
+	pr_debug("%s, valid param length: %d", __func__, params_length);
+	if (params_length) {
+		rc = adm_dolby_dap_send_params(port_id, params_value,
+					params_length);
+		if (rc) {
+			pr_err("%s: send vdhe/vspe params failed\n", __func__);
+			kfree(params_value);
+			return -EINVAL;
+		}
+	}
+	kfree(params_value);
+	return 0;
+}
+
+int dolby_dap_set_custom_stereo_onoff(int port_id)
+{
+	char *params_value;
+	int *update_params_value, rc = 0;
+	uint32_t params_length = (TOTAL_LENGTH_DOLBY_PARAM +
+				DOLBY_PARAM_PAYLOAD_SIZE) *
+				sizeof(uint32_t);
+	if (port_id == DOLBY_INVALID_PORT_ID)
+		return -EINVAL;
+	params_value = kzalloc(params_length, GFP_KERNEL);
+	if (!params_value) {
+		pr_err("%s, params memory alloc failed\n", __func__);
+		return -ENOMEM;
+	}
+	update_params_value = (int *)params_value;
+	params_length = 0;
+	*update_params_value++ = DOLBY_BUNDLE_MODULE_ID;
+	*update_params_value++ = DOLBY_ENABLE_CUSTOM_STEREO;
+	*update_params_value++ = sizeof(uint32_t);
+	if (is_custom_stereo_on)
+		*update_params_value++ = 1;
+	else
+		*update_params_value++ = 0;
+	params_length += (DOLBY_PARAM_PAYLOAD_SIZE +1) * sizeof(uint32_t);
+	pr_debug("%s, valid param length: %d", __func__, params_length);
+	if (params_length) {
+		rc = adm_dolby_dap_send_params(port_id, params_value,
+					params_length);
+		if (rc) {
+			pr_err("%s: setting ds1 custom stereo param failed\n", __func__);
+			kfree(params_value);
+			return -EINVAL;
+		}
+	}
+	kfree(params_value);
+	return 0;
 }
 
 static int map_device_to_port_id(int device)

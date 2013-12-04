@@ -80,6 +80,8 @@
 #define DOLBY_AUTO_ENDP			0x70000004
 #define DOLBY_AUTO_ENDDEP_PARAMS		0x70000005
 
+#define DOLBY_ENABLE_CUSTOM_STEREO	0x108c7
+
 /* DOLBY DAP offsets start */
 #define DOLBY_PARAM_VDHE_LENGTH   1
 #define DOLBY_PARAM_VDHE_OFFSET   0
@@ -246,6 +248,8 @@
 #define DOLBY_VIS_PARAM_HEADER_SIZE		 25
 
 #define DOLBY_INVALID_PORT_ID			-1
+
+extern bool is_custom_stereo_on;
 /* DOLBY device definitions */
 enum {
 	DOLBY_ENDP_INT_SPEAKERS = 0,
@@ -314,6 +318,9 @@ int msm_routing_put_dolby_dap_endpoint_control(
 			struct snd_kcontrol *kcontrol,
 			struct snd_ctl_elem_value *ucontrol);
 void dolby_dap_deinit(int port_id);
+
+int dolby_dap_set_vspe_vdhe(int port_id);
+int dolby_dap_set_custom_stereo_onoff(int port_id);
 /* Dolby DOLBY end */
 #else
 int dolby_dap_init(int port_id, int channels) { return 0; }
@@ -342,6 +349,8 @@ int msm_routing_put_dolby_dap_endpoint_control(
 			struct snd_kcontrol *kcontrol,
 			struct snd_ctl_elem_value *ucontrol) { return 0; }
 void dolby_dap_deinit(int port_id) { return; }
+int dolby_dap_set_vspe_vdhe(int port_id) { return 0; }
+int dolby_dap_set_custom_stereo_onoff(int port_id) { return 0; }
 #endif
 
 #endif

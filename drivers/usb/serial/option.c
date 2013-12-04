@@ -1291,6 +1291,8 @@ static struct usb_serial_driver option_1port_device = {
 	.disconnect        = usb_wwan_disconnect,
 	.release           = usb_wwan_release,
 	.read_int_callback = option_instat_callback,
+	.throttle          = usb_wwan_throttle,
+	.unthrottle        = usb_wwan_unthrottle,
 #ifdef CONFIG_PM
 	.suspend           = usb_wwan_suspend,
 	.resume            = usb_wwan_resume,

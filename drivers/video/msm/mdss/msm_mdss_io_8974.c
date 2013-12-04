@@ -214,19 +214,6 @@ void mdss_dsi_disable_bus_clocks(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 		pr_err("%s: Invalid input data\n", __func__);
 		return;
 	}
-
-	if (ctrl_pdata->shared_pdata.broadcast_enable) {
-		if (ctrl_pdata->panel_data.panel_info.pdest == DISPLAY_1) {
-			pr_debug("%s: Broadcast mode enabled.\n",
-				 __func__);
-			return;
-		} else if ((ctrl_pdata->panel_data.panel_info.pdest == DISPLAY_2)
-		  && (left_ctrl_pdata != NULL) && (left_ctrl_pdata->mdss_dsi_clk_on == 0)) {
-			pr_debug("%s: unprepare left ctrl clocks\n", __func__);
-			clk_disable_unprepare(left_ctrl_pdata->axi_clk);
-			clk_disable_unprepare(left_ctrl_pdata->ahb_clk);
-		}
-	}
 	clk_disable_unprepare(ctrl_pdata->axi_clk);
 	clk_disable_unprepare(ctrl_pdata->ahb_clk);
 }
@@ -238,8 +225,6 @@ void mdss_dsi_prepare_clocks(struct mdss_dsi_ctrl_pdata  *ctrl_pdata)
 		return;
 	}
 
-	clk_prepare(ctrl_pdata->ahb_clk);
-	clk_prepare(ctrl_pdata->axi_clk);
 	clk_prepare(ctrl_pdata->byte_clk);
 	clk_prepare(ctrl_pdata->esc_clk);
 	clk_prepare(ctrl_pdata->pixel_clk);
@@ -264,16 +249,12 @@ void mdss_dsi_unprepare_clocks(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 			clk_unprepare(left_ctrl_pdata->esc_clk);
 			clk_unprepare(left_ctrl_pdata->pixel_clk);
 			clk_unprepare(left_ctrl_pdata->byte_clk);
-			clk_unprepare(left_ctrl_pdata->axi_clk);
-			clk_unprepare(left_ctrl_pdata->ahb_clk);
 		}
 	}
 
 	clk_unprepare(ctrl_pdata->esc_clk);
 	clk_unprepare(ctrl_pdata->pixel_clk);
 	clk_unprepare(ctrl_pdata->byte_clk);
-	clk_unprepare(ctrl_pdata->axi_clk);
-	clk_unprepare(ctrl_pdata->ahb_clk);
 }
 
 void mdss_dsi_clk_enable(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
@@ -309,8 +290,6 @@ void mdss_dsi_clk_enable(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 					__func__);
 	}
 
-	clk_enable(ctrl_pdata->ahb_clk);
-	clk_enable(ctrl_pdata->axi_clk);
 	clk_enable(ctrl_pdata->esc_clk);
 	clk_enable(ctrl_pdata->byte_clk);
 	clk_enable(ctrl_pdata->pixel_clk);
@@ -342,10 +321,6 @@ void mdss_dsi_clk_disable(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 			clk_disable(left_ctrl_pdata->pixel_clk);
 			clk_disable(left_ctrl_pdata->byte_clk);
 			clk_disable(left_ctrl_pdata->esc_clk);
-
-			clk_disable(left_ctrl_pdata->axi_clk);
-			clk_disable(left_ctrl_pdata->ahb_clk);
-
 			left_ctrl_pdata->mdss_dsi_clk_on = 0;
 		}
 	}
@@ -353,10 +328,6 @@ void mdss_dsi_clk_disable(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 	clk_disable(ctrl_pdata->pixel_clk);
 	clk_disable(ctrl_pdata->byte_clk);
 	clk_disable(ctrl_pdata->esc_clk);
-
-	clk_disable(ctrl_pdata->axi_clk);
-	clk_disable(ctrl_pdata->ahb_clk);
-
 	ctrl_pdata->mdss_dsi_clk_on = 0;
 }
 

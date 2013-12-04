@@ -72,11 +72,11 @@
 #define BQ27X41_FLAGS_OTC		(1 << 15)
 
 #define BQ27X41_I2C_ADDRESS		0x55	/* Battery I2C address on the bus */
-#define BQ27X41_TEMP_LOW_THRESHOLD	27	/* Low temperature threshold in 0.1 C */
-#define BQ27X41_TEMP_HI_THRESHOLD	450	/* High temperature threshold in 0.1 C */
+#define BQ27X41_TEMP_LOW_THRESHOLD	0	/* Low temp cutoff in 0.1 C */
+#define BQ27X41_TEMP_HI_THRESHOLD	600	/* High temp cutoff in 0.1 C */
 #define BQ27X41_TEMP_MID_THRESHOLD	100	/* Mid temperature threshold in 0.1 C */
 #define BQ27X41_VOLT_LOW_THRESHOLD	2500	/* Low voltage threshold in mV */
-#define BQ27X41_VOLT_HI_THRESHOLD	4350	/* High voltage threshold in mV */
+#define BQ27X41_VOLT_HI_THRESHOLD	4400	/* High voltage threshold in mV */
 #define BQ27X41_VOLT_CRIT_THRESHOLD	3200	/* Critically low votlage threshold in mV */
 #define BQ27X41_BATTERY_INTERVAL	5000	/* 5 second duration */
 #define BQ27X41_BATTERY_INTERVAL_EARLY	1000	/* 1 second on probe */
@@ -363,6 +363,25 @@ static int bq27x41_read_manufacturer_id(struct bq27x41_info *info)
 		return -1;
 	}
 
+	/* Check for valid battery id */
+#if defined(CONFIG_ARCH_MSM8974_THOR)
+	if (strncmp(info->manufacturer_id,
+			"MCN KC4 ", BQ27X41_MANUFACTURER_LENGTH) &&
+		strncmp(info->manufacturer_id,
+			"SWE KC4 ", BQ27X41_MANUFACTURER_LENGTH))
+#elif defined(CONFIG_ARCH_MSM8974_APOLLO)
+	if (strncmp(info->manufacturer_id,
+			"DSY APL ", BQ27X41_MANUFACTURER_LENGTH) &&
+		strncmp(info->manufacturer_id,
+			"SWE APL ", BQ27X41_MANUFACTURER_LENGTH))
+#else
+	if (0)
+#endif
+	{
+		strlcpy(info->manufacturer_id,
+			"UNKNOWN", BQ27X41_MANUFACTURER_LENGTH);
+	}
+
 	return 0;
 }
 
@@ -404,9 +423,22 @@ static void battery_handle_work(struct work_struct *work)
 
 	if (temp_error_counter > BQ27X41_ERROR_THRESHOLD) {
 		info->err_flags |= TEMP_RANGE_ERROR;
-		printk(KERN_ERR "battery driver temp - %d\n",
-				info->battery_temperature / 10);
 		temp_error_counter = 0;
+
+		printk(KERN_WARNING
+			"bq27x41: battery has reached critical thermal level, "
+			"(%dC) shutting down...\n",
+			info->battery_temperature/10);
+
+#ifdef CONFIG_AMAZON_METRICS_LOG
+
+		snprintf(buf, sizeof(buf),
+			"bq27x41:def:thermal_shutdown=1;CT;1,temp=%d;DV;1:NR",
+			info->battery_temperature/10);
+
+		log_to_metrics(ANDROID_LOG_INFO, "battery", buf);
+#endif
+		machine_power_off();
 	}
 
 	err = bq27x41_battery_read_voltage(&value);

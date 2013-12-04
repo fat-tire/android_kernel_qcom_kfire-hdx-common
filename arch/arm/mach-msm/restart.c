@@ -25,6 +25,9 @@
 #include <linux/mfd/pmic8901.h>
 #include <linux/mfd/pm8xxx/misc.h>
 #include <linux/qpnp/power-on.h>
+#if defined(CONFIG_AMAZON_METRICS_LOG)
+#include <mach/socinfo.h>
+#endif
 
 #include <asm/mach-types.h>
 #include <asm/cacheflush.h>
@@ -63,6 +66,7 @@ int pmic_reset_irq;
 static void __iomem *msm_tmr0_base;
 
 #ifdef CONFIG_MSM_DLOAD_MODE
+static bool dload_mode_enabled;
 static int in_panic;
 static void *dload_mode_addr;
 
@@ -90,6 +94,7 @@ static void set_dload_mode(int on)
 		__raw_writel(on ? 0xCE14091A : 0,
 		       dload_mode_addr + sizeof(unsigned int));
 		mb();
+		dload_mode_enabled = on;
 	}
 }
 
@@ -135,8 +140,12 @@ static void __msm_power_off(int lower_pshold)
 	if (lower_pshold) {
 		if (!use_restart_v2())
 			__raw_writel(0, PSHOLD_CTL_SU);
-		else
+		else {
+#if defined(CONFIG_AMAZON_METRICS_LOG)
+			qpnp_pon_record_normpoff();
+#endif
 			__raw_writel(0, MSM_MPM2_PSHOLD_BASE);
+		}
 
 		mdelay(10000);
 		printk(KERN_ERR "Powering off has failed\n");
@@ -144,20 +153,8 @@ static void __msm_power_off(int lower_pshold)
 	return;
 }
 
-#if defined(CONFIG_ARCH_MSM8974_THOR) || defined(CONFIG_ARCH_MSM8974_APOLLO)
-#include <linux/power_supply.h>
-#endif
-
 static void msm_power_off(void)
 {
-#if defined(CONFIG_ARCH_MSM8974_THOR) || defined(CONFIG_ARCH_MSM8974_APOLLO)
-	/* Restart to charge mode instead of halt because of QC PMIC bug */
-	if (power_supply_is_system_supplied()) {
-		msm_restart(0, "oem-1");
-		return;
-	}
-#endif
-
 	/* MSM initiated power off, lower ps_hold */
 	__msm_power_off(1);
 }
@@ -205,6 +202,9 @@ static irqreturn_t resout_irq_handler(int irq, void *dev_id)
 
 static void msm_restart_prepare(const char *cmd)
 {
+#if defined(CONFIG_AMAZON_METRICS_LOG)
+	void __iomem *wdreg_addr;
+#endif
 #ifdef CONFIG_MSM_DLOAD_MODE
 
 	/* This looks like a normal reboot at this point. */
@@ -221,9 +221,25 @@ static void msm_restart_prepare(const char *cmd)
 	if (!download_mode)
 		set_dload_mode(0);
 #endif
-
+#if defined(CONFIG_AMAZON_METRICS_LOG)
+	wdreg_addr = sw_wd_reg_addr();
+#endif
 	pm8xxx_reset_pwr_off(1);
-	qpnp_pon_system_pwr_off(1);
+
+#if defined(CONFIG_AMAZON_METRICS_LOG)
+	if (readb_relaxed(wdreg_addr + 0x17C0)) {
+		if (cmd != NULL
+#ifdef CONFIG_MSM_DLOAD_MODE
+		|| dload_mode_enabled || in_panic
+#endif
+		|| oops_in_progress
+		)
+			qpnp_pon_system_pwr_off(1);
+		else
+			qpnp_pon_system_pwr_off_metrics();
+	} else
+#endif
+		qpnp_pon_system_pwr_off(1);
 
 	if (cmd != NULL) {
 		if (!strncmp(cmd, "bootloader", 10)) {

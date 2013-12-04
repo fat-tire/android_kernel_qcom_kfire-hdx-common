@@ -69,6 +69,95 @@ static inline int sdhci_runtime_pm_put(struct sdhci_host *host)
 }
 #endif
 
+void sdhci_trace_write(struct sdhci_host *host, int in_irq,
+			const char *fmt, ...)
+{
+	u64 ts = 0;
+	unsigned int idx;
+	va_list args;
+	struct sdhci_trace_event *event;
+
+	if (!(host->quirks2 & SDHCI_QUIRK2_TRACE_ON))
+		return;
+
+	if (!host->trace_buf.rbuf)
+		return;
+
+	/* To prevent taking a spinlock here an atomic increment
+	 * is used, and modulus is used to keep index within
+	 * array bounds. The cast to unsigned is necessary so
+	 * increment and rolover wraps to 0 correctly
+	 */
+	idx = ((unsigned int)atomic_inc_return(&host->trace_buf.wr_idx)) &
+			(SDHCI_TRACE_RBUF_NUM_EVENTS - 1);
+
+	/* Catch some unlikely machine specific wrap-around bug */
+	if (unlikely(idx > (SDHCI_TRACE_RBUF_NUM_EVENTS - 1)))
+		return;
+
+	/* No timestamp in irq to speed up logging as cpu_clock()
+	 * may have barriers
+	 */
+	if (!in_irq)
+		ts = cpu_clock(0);
+
+	event = &host->trace_buf.rbuf[idx];
+	va_start(args, fmt);
+	vscnprintf(event->data, SDHCI_TRACE_EVENT_DATA_SZ, fmt, args);
+	va_end(args);
+}
+
+#define SDHCI_TRACE(host, fmt, ...) \
+		sdhci_trace_write(host, 0, fmt, ##__VA_ARGS__);
+#define SDHCI_TRACE_IRQ(host, fmt, ...) \
+		sdhci_trace_write(host, 0, fmt, ##__VA_ARGS__);
+
+static void sdhci_trace_init(struct sdhci_host *host)
+{
+	BUILD_BUG_ON_NOT_POWER_OF_2(SDHCI_TRACE_RBUF_NUM_EVENTS);
+
+
+	host->trace_buf.rbuf = (struct sdhci_trace_event *)
+				__get_free_pages(GFP_KERNEL|__GFP_ZERO,
+				SDHCI_TRACE_RBUF_SZ_ORDER);
+
+	if (!host->trace_buf.rbuf) {
+		pr_err("Unable to allocate trace for sdhci\n");
+		return;
+	}
+
+	atomic_set(&host->trace_buf.wr_idx, -1);
+}
+
+static void sdhci_dump_irq_buffer(struct sdhci_host *host)
+{
+	unsigned int idx, l;
+	unsigned int N = SDHCI_TRACE_RBUF_NUM_EVENTS - 1;
+	struct sdhci_trace_event *event;
+
+	if (!(host->quirks2 & SDHCI_QUIRK2_TRACE_ON))
+		return;
+
+	if (!host->trace_buf.rbuf)
+		return;
+
+	idx = ((unsigned int)atomic_read(&host->trace_buf.wr_idx)) & N;
+	l = (idx + 1) & N;
+
+	do {
+		event = &host->trace_buf.rbuf[l];
+		pr_info("%s", (char *)event->data);
+		l = (l + 1) & N;
+		if (l == idx) {
+			event = &host->trace_buf.rbuf[l];
+			pr_info("%s", (char *)event->data);
+			break;
+		}
+	} while (1);
+}
+
+
+
 static void sdhci_dump_state(struct sdhci_host *host)
 {
 	struct mmc_host *mmc = host->mmc;
@@ -84,6 +173,8 @@ static void sdhci_dump_state(struct sdhci_host *host)
 
 static void sdhci_dumpregs(struct sdhci_host *host)
 {
+	u32 present_state;
+
 	pr_info(DRIVER_NAME ": =========== REGISTER DUMP (%s)===========\n",
 		mmc_hostname(host->mmc));
 
@@ -129,7 +220,18 @@ static void sdhci_dumpregs(struct sdhci_host *host)
 		       readl(host->ioaddr + SDHCI_ADMA_ADDRESS));
 
 	sdhci_dump_state(host);
+	sdhci_dump_irq_buffer(host);
+
 	pr_info(DRIVER_NAME ": ===========================================\n");
+	
+	/*
+	 * If DAT[3:0] level is not 1111b, then trigger kernel panic since it is data timeout already 
+	 */
+	present_state = sdhci_readl(host, SDHCI_PRESENT_STATE); 
+	if (!((present_state & SDHCI_DATA_LVL_MASK) == SDHCI_DATA_LVL_MASK))
+		panic("%s: EMMC data timeout  data line is 0x%x\n", 
+			mmc_hostname(host->mmc),
+			(present_state & SDHCI_DATA_LVL_MASK));
 }
 
 /*****************************************************************************\
@@ -926,6 +1028,10 @@ static void sdhci_prepare_data(struct sdhci_host *host, struct mmc_command *cmd)
 	sdhci_writew(host, SDHCI_MAKE_BLKSZ(SDHCI_DEFAULT_BOUNDARY_ARG,
 		data->blksz), SDHCI_BLOCK_SIZE);
 	sdhci_writew(host, data->blocks, SDHCI_BLOCK_COUNT);
+	SDHCI_TRACE_IRQ(host, "%lld: %s: 0x28=0x%08x 0x3E=0x%08x\n",
+			ktime_to_ms(ktime_get()), __func__,
+			sdhci_readb(host, SDHCI_HOST_CONTROL),
+			sdhci_readw(host, SDHCI_HOST_CONTROL2));
 }
 
 static void sdhci_set_transfer_mode(struct sdhci_host *host,
@@ -976,6 +1082,9 @@ static void sdhci_finish_data(struct sdhci_host *host)
 	data = host->data;
 	host->data = NULL;
 
+	SDHCI_TRACE_IRQ(host, "%lld: %s: 0x24=0x%08x",
+			ktime_to_ms(ktime_get()), __func__,
+			sdhci_readl(host, SDHCI_PRESENT_STATE));
 	if (host->flags & SDHCI_REQ_USE_DMA) {
 		if (host->flags & SDHCI_USE_ADMA)
 			sdhci_adma_table_post(host, data);
@@ -1102,6 +1211,12 @@ static void sdhci_send_command(struct sdhci_host *host, struct mmc_command *cmd)
 	if (cmd->data)
 		host->data_start_time = ktime_get();
 	sdhci_writew(host, SDHCI_MAKE_CMD(cmd->opcode, flags), SDHCI_COMMAND);
+	SDHCI_TRACE_IRQ(host, "%lld: %s: updated 0x8=0x%08x 0xC=0x%08x 0xE=0x%08x\n",
+			ktime_to_ms(ktime_get()), __func__,
+			sdhci_readl(host, SDHCI_ARGUMENT),
+			sdhci_readl(host, SDHCI_TRANSFER_MODE),
+			sdhci_readl(host, SDHCI_COMMAND));
+
 }
 
 static void sdhci_finish_command(struct sdhci_host *host)
@@ -2370,6 +2485,8 @@ static void sdhci_cmd_irq(struct sdhci_host *host, u32 intmask)
 			SDHCI_INT_INDEX))
 		host->cmd->error = -EILSEQ;
 
+	SDHCI_TRACE_IRQ(host, "%lld: %s: cmd-err intmask: 0x%x",
+				ktime_to_ms(ktime_get()), __func__, intmask);
 	if (host->quirks2 & SDHCI_QUIRK2_IGNORE_CMDCRC_FOR_TUNING) {
 		if ((host->cmd->opcode == MMC_SEND_TUNING_BLOCK_HS200) ||
 			(host->cmd->opcode == MMC_SEND_TUNING_BLOCK)) {
@@ -2451,6 +2568,9 @@ static void sdhci_data_irq(struct sdhci_host *host, u32 intmask)
 	u32 command;
 	bool pr_msg = false;
 	BUG_ON(intmask == 0);
+
+	SDHCI_TRACE_IRQ(host, "%lld: %s: data-irq rxd: intmask: 0x%x\n",
+			ktime_to_ms(ktime_get()), __func__, intmask);
 
 	/* CMD19 generates _only_ Buffer Read Ready interrupt */
 	if (intmask & SDHCI_INT_DATA_AVAIL) {
@@ -2676,6 +2796,8 @@ out:
 	if (cardint)
 		mmc_signal_sdio_irq(host->mmc);
 
+	SDHCI_TRACE_IRQ(host, "%lld: %s: updated: intmask: 0x%x\n",
+			ktime_to_ms(ktime_get()), __func__, intmask);
 	return result;
 }
 
@@ -3350,6 +3472,8 @@ int sdhci_add_host(struct sdhci_host *host)
 	if (host->cpu_dma_latency_us)
 		pm_qos_add_request(&host->pm_qos_req_dma,
 				PM_QOS_CPU_DMA_LATENCY, PM_QOS_DEFAULT_VALUE);
+	if (host->quirks2 & SDHCI_QUIRK2_TRACE_ON)
+		sdhci_trace_init(host);
 	mmc_add_host(mmc);
 
 	pr_info("%s: SDHCI controller on %s [%s] using %s\n",

@@ -424,6 +424,8 @@ struct msm_otg {
  * @phy_sof_workaround: Enable ALL PHY SOF bug related workarounds for
 		SUSPEND, RESET and RESUME.
  * @phy_susp_sof_workaround: Enable PHY SOF workaround only for SUSPEND.
+ * @dis_internal_clk_gating: if set, internal clock gating in controller
+ * 			is disabled
  *
  */
 struct msm_hsic_host_platform_data {
@@ -431,6 +433,7 @@ struct msm_hsic_host_platform_data {
 	unsigned data;
 	bool ignore_cal_pad_config;
 	bool phy_sof_workaround;
+	bool dis_internal_clk_gating;
 	bool phy_susp_sof_workaround;
 	bool phy_reset_sof_workaround;
 	u32 reset_delay;
@@ -460,6 +463,7 @@ struct msm_usb_host_platform_data {
 	int pmic_gpio_dp_irq;
 	unsigned int dock_connect_irq;
 	bool use_sec_phy;
+	u8 phy_type;
 	bool pd_rework_installed;
 	
 	bool phy_sof_workaround;

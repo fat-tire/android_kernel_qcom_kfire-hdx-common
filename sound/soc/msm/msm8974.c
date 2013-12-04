@@ -203,6 +203,7 @@ enum {
 
 static struct platform_device *spdev;
 static struct regulator *ext_spk_amp_regulator;
+static struct regulator *ext_spk_amp_boost;
 static int ext_spk_amp_gpio = -1;
 static int ext_ult_spk_amp_gpio = -1;
 static int ext_ult_lo_amp_gpio = -1;
@@ -226,6 +227,23 @@ static struct snd_soc_jack max97236_headset;
 #endif
 static atomic_t prim_auxpcm_rsc_ref;
 static atomic_t sec_auxpcm_rsc_ref;
+
+#if defined(CONFIG_SND_SOC_MSM8974_THOR)
+	static inline bool __init is_board_thor_DVT(void)
+	{
+		struct device_node *ap;
+		int len;
+
+		ap = of_find_node_by_path("/idme/board_id");
+		 if (ap) {
+				const char *boardid = of_get_property(ap, "value", &len);
+				if (len >= 3)
+					 if ((boardid[0] == '0' && boardid[1] == 'c' && boardid[2] == '0') && (boardid[3] == '3' || boardid[3] == '4'))
+						return true;
+		}
+		return false;
+	}
+#endif
 
 static int msm8974_liquid_ext_spk_power_amp_init(void)
 {
@@ -255,6 +273,29 @@ static int msm8974_liquid_ext_spk_power_amp_init(void)
 				return PTR_ERR(ext_spk_amp_regulator);
 			}
 		}
+#elif defined(CONFIG_SND_SOC_MSM8974_THOR)
+		/* Enable audio boost only for DVT and PVT devices */
+		if (is_board_thor_DVT()) {
+			if (ext_spk_amp_boost == NULL) {
+				ext_spk_amp_boost = regulator_get(&spdev->dev,
+								"qcom,ext-spk-amp-boost");
+
+				if (IS_ERR(ext_spk_amp_boost)) {
+					pr_err("%s: Cannot get boost %s.\n",
+						__func__, "qcom,ext-spk-amp-boost");
+
+					ext_spk_amp_boost = NULL;
+				} else {
+					ret = regulator_set_voltage(ext_spk_amp_boost, 4500000, 5000000);
+					if (ret) {
+							pr_err("%s: Setting regulator voltage failed for "
+								"regulator err = %d\n", __func__, ret);
+					}
+
+					regulator_enable(ext_spk_amp_boost);
+				}
+			}
+	}
 #endif
 	}
 
@@ -2877,6 +2918,7 @@ static __devinit int msm8974_asoc_machine_probe(struct platform_device *pdev)
 	atomic_set(&sec_auxpcm_rsc_ref, 0);
 	spdev = pdev;
 	ext_spk_amp_regulator = NULL;
+	ext_spk_amp_boost = NULL;
 
 	ret = snd_soc_register_card(card);
 	if (ret) {
@@ -2969,6 +3011,11 @@ static int __devexit msm8974_asoc_machine_remove(struct platform_device *pdev)
 
 	if (ext_spk_amp_regulator)
 		regulator_put(ext_spk_amp_regulator);
+
+	if (ext_spk_amp_boost) {
+		regulator_disable(ext_spk_amp_boost);
+		regulator_put(ext_spk_amp_boost);
+	}
 
 	if (gpio_is_valid(ext_ult_spk_amp_gpio))
 		gpio_free(ext_ult_spk_amp_gpio);

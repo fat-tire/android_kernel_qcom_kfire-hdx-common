@@ -18,9 +18,30 @@
 #include <linux/mmc/host.h>
 #include <linux/pm_qos.h>
 
+#define SDHCI_TRACE_RBUF_SZ_ORDER	4	/* 2^4 pages */
+#define SDHCI_TRACE_RBUF_SZ		\
+	(PAGE_SIZE * (1 << SDHCI_TRACE_RBUF_SZ_ORDER))
+#define SDHCI_TRACE_EVENT_SZ		256
+#define SDHCI_TRACE_RBUF_NUM_EVENTS	\
+	(SDHCI_TRACE_RBUF_SZ / SDHCI_TRACE_EVENT_SZ)
+
+#define	SDHCI_TRACE_COMM_LEN		12
+
+#define SDHCI_TRACE_EVENT_DATA_SZ \
+	SDHCI_TRACE_EVENT_SZ
+
 struct sdhci_next {
 	unsigned int sg_count;
 	s32 cookie;
+};
+
+struct sdhci_trace_event {
+	char	data[SDHCI_TRACE_EVENT_DATA_SZ];
+};
+
+struct sdhci_trace_buffer {
+	struct sdhci_trace_event	*rbuf;
+	atomic_t			wr_idx;
 };
 
 struct sdhci_host {
@@ -142,6 +163,10 @@ struct sdhci_host {
  */
 #define SDHCI_QUIRK2_USE_RESERVED_MAX_TIMEOUT		(1<<8)
 
+/* Start logging events */
+#define SDHCI_QUIRK2_TRACE_ON				(1<<9)
+
+
 	int irq;		/* Device IRQ */
 	void __iomem *ioaddr;	/* Mapped address */
 
@@ -229,6 +254,7 @@ struct sdhci_host {
 	struct sdhci_next next_data;
 	ktime_t data_start_time;
 
+	struct sdhci_trace_buffer trace_buf;
 	unsigned long private[0] ____cacheline_aligned;
 };
 #endif /* LINUX_MMC_SDHCI_H */

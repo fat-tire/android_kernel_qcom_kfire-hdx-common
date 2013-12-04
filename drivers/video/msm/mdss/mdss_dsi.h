@@ -340,6 +340,7 @@ struct mdss_dsi_ctrl_pdata {
 	struct clk *esc_clk;
 	struct clk *pixel_clk;
 	u8 ctrl_state;
+	int panel_mode;
 	int irq_cnt;
 	int mdss_dsi_clk_on;
 	int rst_gpio;
@@ -356,6 +357,8 @@ struct mdss_dsi_ctrl_pdata {
 	int pwm_pmic_gpio;
 	int pwm_lpg_chan;
 	int bklt_max;
+	int backlight_reinit;
+	int backlight_reset;
 	struct pwm_device *pwm_bl;
 	struct dsi_panel_cmds psr_on_cmds;
 	struct dsi_panel_cmds psr_off_cmds;

@@ -558,8 +558,8 @@
 };
 
 &pm8941_chg_boost {
-	regulator-min-microvolt = <5000000>;
-	regulator-max-microvolt = <5000000>;
+	regulator-min-microvolt = <4500000>;
+	regulator-max-microvolt = <4500000>;
 	regulator-name = "8941_smbb_boost";
 };
 

@@ -214,7 +214,7 @@
                 1 &intc 0 148 0
                 2 &msmgpio 144 0x8>;
                 interrupt-names = "core_irq", "async_irq", "wakeup";
-                HSIC_VDDCX-supply = <&pm8841_s2>;
+		        hsic_vdd_dig-supply = <&pm8841_s2_corner>;
                 HSIC_GDSC-supply = <&gdsc_usb_hsic>;
                 hsic,strobe-gpio = <&msmgpio 144 0x00>;
                 hsic,data-gpio = <&msmgpio 145 0x00>;
@@ -225,8 +225,9 @@
                 qcom,phy-susp-sof-workaround;
                 qcom,phy-reset-sof-workaround;
                 hsic,reset-delay = <200>;
-		qcom,hsic-swfi-latency = <1>;
-
+		        qcom,hsic-swfi-latency = <1>;
+                hsic,vdd-voltage-level = <1 5 7>;
+		        qcom,dis-internal-clk-gating;
                 qcom,msm-bus,name = "hsic";
                 qcom,msm-bus,num-cases = <2>;
                 qcom,msm-bus,num-paths = <1>;
@@ -292,12 +293,15 @@
 	usb2,wakeup-gpio = <&msmgpio 82 0x00>;
 	qcom,sw-fpr-control;
 	qcom,phy-sof-workaround;
+        hsusb_vdd_dig-supply = <&pm8841_s2_corner>;
+	qcom,vdd-voltage-level = <1 2 3 5 7>;
 };
 
 &usb3 {
 	qcom,otg-capability;
-	qcom,dwc-hsphy-init = <0x00D0D5A4>;
+	qcom,dwc-hsphy-init = <0x00F0D7A4>;
 	qcom,skip-charger-detection;
+	qcom,vbus-sensing;
 };
 
 &pm8941_pon {
@@ -610,7 +614,7 @@
         qcom,vdd-io-current-level = <6 22000>;
 
         qcom,sup-voltages = <2000 2000>;
-        status = "ok";
+        status = "disabled";
 };
 
 

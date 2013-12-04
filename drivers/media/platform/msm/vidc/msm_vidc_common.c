@@ -46,6 +46,8 @@
 	u32 __mbs = (__h >> 4) * (__w >> 4);\
 	__mbs;\
 })
+
+#define MIN(x, y) (((x) < (y)) ? (x) : (y))
 static bool is_turbo_requested(struct msm_vidc_core *core,
 		enum session_type type)
 {
@@ -416,6 +418,10 @@ static void handle_session_init_done(enum command_response cmd, void *data)
 			inst->capability.frame_rate =
 				session_init_done->frame_rate;
 			inst->capability.capability_set = true;
+			inst->capability.width.max = MIN(MAX_SUPPORTED_WIDTH,
+					inst->capability.width.max);
+      inst->capability.height.max = MIN(MAX_SUPPORTED_HEIGHT,
+					inst->capability.height.max);
 		} else {
 			dprintk(VIDC_ERR,
 				"Session init response from FW : 0x%x",

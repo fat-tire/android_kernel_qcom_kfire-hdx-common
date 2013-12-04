@@ -708,17 +708,9 @@ static void bwan_sim_present(struct work_struct *dummy)
 
 	enable_irq(gpio_to_irq(gpio_wan_sim_present));
 
-	if (bwan_fw_rdy_status) {
-
-		/*
-		 * Right now, we send uevent about the SIM only if 
-		 * the modem is powered up. This has to be changed
-		 * once hardware rework is done.
-		 */
-		bwan_sim_present_status ? (envp[0] = "SIM_PRESENT=1") :
-				(envp[0] = "SIM_PRESENT=0");
-		kobject_uevent_env(bwan_kobj, KOBJ_CHANGE, envp);
-	}
+	bwan_sim_present_status ? (envp[0] = "SIM_PRESENT=1") :
+			(envp[0] = "SIM_PRESENT=0");
+	kobject_uevent_env(bwan_kobj, KOBJ_CHANGE, envp);
 
 	return;
 }
@@ -887,7 +879,7 @@ static int __devinit bwan_probe(struct platform_device *pdev)
 			bwan_sim_present_handler,
 			(IRQF_TRIGGER_RISING | 
 			IRQF_TRIGGER_FALLING),
-			"fw_rdy_irq", NULL);
+			"sim_present_irq", NULL);
 
 	if (retval) {
 		printk ("Unable to request irq %d for sim_present "

@@ -223,6 +223,8 @@ static struct lp855x_device_config lp8557_cfg = {
 
 static int lp855x_configure(struct lp855x *lp)
 {
+	u8 ret = 0;
+
 	switch (lp->chip_id) {
 	case LP8550:
 	case LP8551:
@@ -247,8 +249,16 @@ static int lp855x_configure(struct lp855x *lp)
 		/* BL_ON = 1 after updating EPROM settings */
 		lp855x_update_bit(lp, LP8557_BL_CMD, LP8557_BL_MASK, LP8557_BL_ON);
 	}
+	else {
+		lp->last_brightness = 0;
+		ret = lp855x_read_byte(lp, lp->cfg->reg_brightness, (u8 *)&lp->last_brightness);
+		if (ret) {
+			dev_err(lp->dev, "%s read from chip failed\n", __func__);
+			lp->last_brightness = 0;
+		}
+	}
 
-	return 0;
+	return ret;
 }
 
 //These callbacks will be used for in-cell touch systems where the touch

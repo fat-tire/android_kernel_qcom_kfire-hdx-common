@@ -277,6 +277,9 @@ static int dwc3_otg_start_peripheral(struct usb_otg *otg, int on)
 	if (!otg->gadget)
 		return -EINVAL;
 
+	if (ext_xceiv && ext_xceiv->config_vbus_sensing)
+		ext_xceiv->config_vbus_sensing(on);
+
 	if (on) {
 		dev_dbg(otg->phy->dev, "%s: turn on gadget %s\n",
 					__func__, otg->gadget->name);

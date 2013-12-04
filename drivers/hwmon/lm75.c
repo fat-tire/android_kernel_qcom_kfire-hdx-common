@@ -28,7 +28,9 @@
 #include <linux/err.h>
 #include <linux/mutex.h>
 #include "lm75.h"
-
+#if defined(CONFIG_AMAZON_METRICS_LOG)
+#include <linux/metricslog.h>
+#endif
 
 /*
  * This driver handles the LM75 and compatible digital temperature sensors.
@@ -352,8 +354,22 @@ static int lm75_detect(struct i2c_client *new_client,
 #ifdef CONFIG_PM
 static int lm75_suspend(struct device *dev)
 {
-	int status;
+	int status, status1;
 	struct i2c_client *client = to_i2c_client(dev);
+#if defined(CONFIG_AMAZON_METRICS_LOG)
+	char thermlog_buf[256];
+	char *thermsen_metrics = "thermsensor:def:pcbmonitor=1;CT;1";
+
+	status1 = lm75_read_value(client, 0x00);
+	if (status1 < 0)
+		dev_dbg(&client->dev, "Can't read temp? %d\n", status1);
+	else {
+		snprintf(thermlog_buf, sizeof(thermlog_buf),
+		"%s,pcb_temp=%d;CT;1:NR", thermsen_metrics, status1*1000);
+		log_to_metrics(ANDROID_LOG_INFO, "ThermalEvent", thermlog_buf);
+	}
+
+#endif
 	status = lm75_read_value(client, LM75_REG_CONF);
 	if (status < 0) {
 		dev_dbg(&client->dev, "Can't read config? %d\n", status);
@@ -366,8 +382,23 @@ static int lm75_suspend(struct device *dev)
 
 static int lm75_resume(struct device *dev)
 {
-	int status;
+	int status, status1;
 	struct i2c_client *client = to_i2c_client(dev);
+#if defined(CONFIG_AMAZON_METRICS_LOG)
+	char thermlog_buf[256];
+	char *thermsen_metrics = "thermsensor:def:pcbmonitor=1;CT;1";
+
+	status1 = lm75_read_value(client, 0x00);
+	if (status1 < 0)
+		dev_dbg(&client->dev, "Can't read temp? %d\n", status1);
+	else {
+		snprintf(thermlog_buf, sizeof(thermlog_buf),
+			"%s,pcb_temp=%d;CT;1:NR", thermsen_metrics,
+			status1*1000);
+		log_to_metrics(ANDROID_LOG_INFO, "ThermalEvent", thermlog_buf);
+	}
+
+#endif
 	status = lm75_read_value(client, LM75_REG_CONF);
 	if (status < 0) {
 		dev_dbg(&client->dev, "Can't read config? %d\n", status);

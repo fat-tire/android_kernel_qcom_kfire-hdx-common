@@ -22,7 +22,7 @@
 /*
  * Driver major.minor.build number
  */
-#define MAX97236_REVISION			"0.00.0551"
+#define MAX97236_REVISION			"0.00.0582"
 
 /* EXTCLK frequency default value */
 #define EXTCLK_FREQUENCY                 1200000
@@ -321,10 +321,10 @@
 #define M97236_KEYDATA_WIDTH		6
 #define M97236_KEYDATA_NUM		(1<<M97236_KEYDATA_WIDTH)
 
-#define	M97236_KEY_THRESH_0		8
-#define	M97236_KEY_THRESH_1		16
-#define	M97236_KEY_THRESH_2		24
-#define	M97236_KEY_THRESH_3		31
+#define	M97236_KEY_THRESH_0		47
+#define	M97236_KEY_THRESH_1		99
+#define	M97236_KEY_THRESH_2		128
+#define	M97236_KEY_THRESH_3		128
 
 /*
  * M97236_REG_18_DC_TEST_SLEW_CONTROL
