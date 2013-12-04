@@ -148,9 +148,13 @@ struct smb349_priv {
 	unsigned chrg_hcs;
 	int bad_battery;
 	int chg_health;
+	int current_limit;
 	unsigned usb_boot_det;
 	int polling_mode;
 	int irq;
+
+	atomic_t suspended;
+	int handle_irq;
 };
 
 /* DEBUG */
@@ -203,6 +207,8 @@ static int smb349_i2c_read(struct i2c_client *client,
 
 static int smb349_i2c_write(struct i2c_client *client,
 			u8 reg_num, u8 value);
+
+static int smb349_change_current_limit(struct smb349_priv *priv, int idx);
 
 static const char *smb349_apsd_result_string(u8 value)
 {
@@ -297,32 +303,6 @@ static int smb349_config(struct smb349_priv *priv, int enable)
 done:
 	return ret;
 }
-
-#if 0
-void smb349_redo_apsd(int enable)
-{
-	u8 value;
-
-	if(g_priv == NULL) {
-		printk(KERN_ERR "%s - SMB349 device not ready !", __func__);
-		return;
-	}
-
-	smb349_config(g_priv, 1);
-	if(enable == 0) {
-		smb349_i2c_read(g_priv->i2c_client, SMB349_CHARGE_CONTROL, &value);
-		value &= ~0x04;
-		smb349_i2c_write(g_priv->i2c_client, SMB349_CHARGE_CONTROL, value);
-	}
-	else {
-		smb349_i2c_read(g_priv->i2c_client, SMB349_CHARGE_CONTROL, &value);
-		value |= 0x04;
-		smb349_i2c_write(g_priv->i2c_client, SMB349_CHARGE_CONTROL, value);
-	}
-	smb349_config(g_priv, 0);
-}
-EXPORT_SYMBOL(smb349_redo_apsd);
-#endif
 
 static int smb349_fast_charge_current_limit(struct smb349_priv *priv)
 {
@@ -675,6 +655,7 @@ static void smb349_irq_worker(struct work_struct *work)
 {
 	u8 value = 0xff;
 	int ret = -1;
+	int idx = 0;
 	struct smb349_priv *priv = container_of(work,
 				struct smb349_priv, irq_work.work);
 
@@ -704,6 +685,19 @@ static void smb349_irq_worker(struct work_struct *work)
 
 			/* newer parts go back to defaults after unplug */
 			smb349_config_fixup(priv);
+
+			/* Locate the first smaller input current limit*/
+			for (idx = ARRAY_SIZE(smb349_input_current_limits) - 1; idx >= 0; idx--)
+				if (smb349_input_current_limits[idx] <= priv->current_limit)
+					break;
+			dev_info(priv->dev, "Change current_limt to [%d]\n", priv->current_limit);
+			if (idx < 0) {
+				dev_err(priv->dev, "Invalid current limit value\n");
+			} else {
+				if (smb349_change_current_limit(priv, idx)) {
+					dev_err(priv->dev, "Unable to change input current limit\n");
+				}
+			}
 
 #if defined(CONFIG_PM_WAKELOCKS)
 			pm_wake_unlock("smb349");
@@ -832,16 +826,25 @@ static void smb349_irq_worker(struct work_struct *work)
 
 	if (priv->polling_mode)
 		schedule_delayed_work(&priv->irq_work, msecs_to_jiffies(1000));
+	else
+		enable_irq(gpio_to_irq(priv->chrg_stat));
 
-	return;
+	priv->handle_irq = 0;
 }
 
 static irqreturn_t smb349_irq(int irq, void *data)
 {
 	struct smb349_priv *priv = (struct smb349_priv *)data;
 
-	/* Scrub through the registers to ack any interrupts */
-	smb349_irq_worker(&priv->irq_work.work);
+	disable_irq_nosync(gpio_to_irq(priv->chrg_stat));
+
+	priv->handle_irq = 1;
+
+	/* Need to wait until i2c susbsytem is resumed */
+	if (!atomic_read(&priv->suspended)) {
+		/* Scrub through the registers to ack any interrupts */
+		schedule_delayed_work(&priv->irq_work, 0);
+	}
 
 	return IRQ_HANDLED;
 }
@@ -1482,45 +1485,31 @@ done:
 	return len;
 }
 
-static ssize_t smb349_current_limit_store(struct device *dev,
-			struct device_attribute *attr, const char *buf, size_t len)
+static int smb349_change_current_limit(struct smb349_priv *priv, int idx)
 {
-	int ret = -1, idx = 0;
+	int ret = -1;
 	const int aicl_disable_val = 0xa7;
 	const int aicl_enable_val = 0xb7;
-	unsigned char uvalue = 0xff;
-	struct smb349_priv *priv = i2c_get_clientdata(to_i2c_client(dev));
-	int value = simple_strtoul(buf, NULL, 10);
-
-	mutex_lock(&priv->lock);
+	unsigned char value = 0xff;
 
 	if (smb349_config(priv, 1)) {
 		dev_err(priv->dev, "Unable to enable writes to CONFIG regs\n");
 		goto done;
 	}
 
-	/* Locate the first smaller input current limit*/
-	for (idx = ARRAY_SIZE(smb349_input_current_limits) - 1; idx >= 0; idx--)
-		if (smb349_input_current_limits[idx] <= value)
-			break;
-
-	if (idx < 0) {
-		dev_err(priv->dev, "Invalid current limit value \n");
-		goto done;
-	}
-
 	/* Adjust input current limit */
-	if ((ret = smb349_i2c_read(priv->i2c_client, SMB349_CURRENT_LIMIT, &uvalue))) {
+	if ((ret = smb349_i2c_read(priv->i2c_client, SMB349_CURRENT_LIMIT, &value))) {
 		dev_err(priv->dev,
 				"%s: Unable to read SMB349_CURRENT_LIMIT: %d\n",
 				__FUNCTION__, ret);
 		goto done;
 	}
 
-	uvalue &= ~0x0f;
-	uvalue |= idx;
+	priv->current_limit = smb349_input_current_limits[idx];
+	value &= ~0x0f;
+	value |= idx;
 
-	if ((ret = smb349_i2c_write(priv->i2c_client, SMB349_CURRENT_LIMIT, uvalue))) {
+	if ((ret = smb349_i2c_write(priv->i2c_client, SMB349_CURRENT_LIMIT, value))) {
 		dev_err(priv->dev,
 				"%s: Unable to write SMB349_CURRENT_LIMIT: %d\n",
 				__FUNCTION__, ret);
@@ -1546,12 +1535,40 @@ static ssize_t smb349_current_limit_store(struct device *dev,
 	}
 
 	ret = 0;
+
 done:
 	if (smb349_config(priv, 0)) {
 		dev_err(priv->dev,
 			"%s: Unable to enable writes to CONFIG regs\n", __FUNCTION__);
 		ret = -1;
 	}
+
+	return ret;
+}
+
+static ssize_t smb349_current_limit_store(struct device *dev,
+			struct device_attribute *attr, const char *buf, size_t len)
+{
+	struct smb349_priv *priv = i2c_get_clientdata(to_i2c_client(dev));
+	int idx = 0, value = simple_strtoul(buf, NULL, 10);
+
+	mutex_lock(&priv->lock);
+
+	/* Locate the first smaller input current limit*/
+	for (idx = ARRAY_SIZE(smb349_input_current_limits) - 1; idx >= 0; idx--)
+		if (smb349_input_current_limits[idx] <= value)
+			break;
+
+	if (idx < 0) {
+		dev_err(priv->dev, "Invalid current limit value\n");
+		goto done;
+	}
+
+	if (smb349_change_current_limit(priv, idx)) {
+		dev_err(priv->dev, "Unable to change input current limit\n");
+		goto done;
+	}
+done:
 
 	mutex_unlock(&priv->lock);
 
@@ -2081,6 +2098,8 @@ static int smb349_probe(struct i2c_client *client,
 	/* Fixup any registers we want to */
 	smb349_config_fixup(priv);
 
+	priv->current_limit = smb349_input_current_limits[ARRAY_SIZE(smb349_input_current_limits) - 1];
+
 	/* Init work */
 	INIT_DELAYED_WORK(&priv->irq_work, smb349_irq_worker);
 #ifdef CONFIG_AMAZON_METRICS_LOG
@@ -2141,8 +2160,8 @@ static int smb349_probe(struct i2c_client *client,
 		gpio_request(priv->chrg_stat, "chrg_stat");
 		gpio_direction_input(priv->chrg_stat);
 
-		if (request_threaded_irq(gpio_to_irq(priv->chrg_stat),
-				NULL, smb349_irq,
+		if (request_irq(gpio_to_irq(priv->chrg_stat),
+				smb349_irq,
 				IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
 				"smb349_irq", priv)) {
 			dev_err(priv->dev, "Unable to set up threaded IRQ\n");
@@ -2185,6 +2204,10 @@ static int smb349_remove(struct i2c_client *client)
 		ARRAY_SIZE(smb349_fast_charge_currents) - 1, -1);
 	smb349_config(priv, 0);
 
+	/* Reset input current limit to maximum */
+	smb349_change_current_limit(priv,
+		ARRAY_SIZE(smb349_input_current_limits) - 1);
+
 	/* Free IRQ and stop any pending IRQ work */
 	if (priv->polling_mode == 0)
 		free_irq(priv->irq, priv);
@@ -2220,8 +2243,16 @@ static int smb349_suspend(struct i2c_client *client, pm_message_t mesg)
 
 	dev_info(priv->dev, "Entering suspend, event = 0x%04x\n", mesg.event);
 
+	if (priv->handle_irq) {
+		dev_info(priv->dev, "%s: Pending interrupt handler, exiting\n",
+			__func__);
+		return -EBUSY;
+	}
+
 	cancel_delayed_work_sync(&priv->irq_work);
 	cancel_work_sync(&priv->fixup_work);
+
+	atomic_inc(&priv->suspended);
 
 	dev_info(priv->dev, "Finishing suspend\n");
 
@@ -2232,10 +2263,14 @@ static int smb349_resume(struct i2c_client *client)
 {
 	struct smb349_priv *priv = i2c_get_clientdata(client);
 
-	dev_info(priv->dev, "Finishing resume\n");
+	atomic_dec(&priv->suspended);
 
 	if (priv->polling_mode)
 		schedule_delayed_work(&priv->irq_work, msecs_to_jiffies(1000));
+	else if (priv->handle_irq)
+		schedule_delayed_work(&priv->irq_work, 0);
+
+	dev_info(priv->dev, "Finishing resume\n");
 
 	return 0;
 }

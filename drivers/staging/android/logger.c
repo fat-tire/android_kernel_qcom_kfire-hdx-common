@@ -35,6 +35,10 @@
 static int metrics_init;
 #endif
 
+#ifdef CONFIG_AMAZON_EVENT_LOG
+#include <linux/eventlog.h>
+#endif
+
 /**
  * struct logger_log - represents a specific log, such as 'main' or 'radio'
  *
@@ -839,10 +843,9 @@ out_free_buffer:
 }
 
 //ACOS_MOD_BEGIN
-#ifdef CONFIG_AMAZON_METRICS_LOG
-static void logger_kernel_write(const struct iovec *iov, unsigned long nr_segs)
+#if defined(CONFIG_AMAZON_METRICS_LOG) || defined(CONFIG_AMAZON_EVENT_LOG)
+static void logger_kernel_write(struct logger_log *log, const struct iovec *iov, unsigned long nr_segs)
 {
-    struct logger_log *log = get_log_from_name(LOGGER_LOG_METRICS);
     struct logger_entry header;
     struct timespec now;
     unsigned long count = nr_segs;
@@ -896,9 +899,43 @@ static void logger_kernel_write(const struct iovec *iov, unsigned long nr_segs)
     /* wake up any blocked readers */
     wake_up_interruptible(&log->wq);
 }
+#endif
 
+#ifdef CONFIG_AMAZON_EVENT_LOG
+void log_to_events(int32_t tag, const char *log_msg)
+{
+   char buf[256];
+   int len;
+   struct logger_log *log = get_log_from_name(LOGGER_LOG_EVENTS);
+
+   if (log_msg != NULL) {
+        struct iovec vec[2];
+
+        vec[0].iov_base = (void *)&tag;
+        vec[0].iov_len  = sizeof(tag);
+
+	buf[0] = EVENT_TYPE_STRING;
+	len = strlen(log_msg);
+	if (len > (sizeof(buf) - sizeof(len) - 2))
+		len = sizeof(buf) - sizeof(len) - 2;
+
+	memcpy(&buf[1], &len, sizeof(len));
+	memcpy(&buf[1+sizeof(len)], log_msg, len);
+	buf[1+sizeof(len)+len] = '\n';
+	len = len + sizeof(len) + 2;
+
+	vec[1].iov_base = (void *)buf;
+	vec[1].iov_len = len;
+
+        logger_kernel_write(log, vec, 2);
+   }
+}
+#endif
+
+#ifdef CONFIG_AMAZON_METRICS_LOG
 void log_to_metrics(android_LogPriority priority, const char *domain, const char *log_msg)
 {
+    struct logger_log *log = get_log_from_name(LOGGER_LOG_METRICS);
     if (metrics_init != 0 && log_msg != NULL) {
         struct iovec vec[3];
 
@@ -915,7 +952,7 @@ void log_to_metrics(android_LogPriority priority, const char *domain, const char
         vec[2].iov_base = (void *)log_msg;
         vec[2].iov_len  = strlen(log_msg) + 1;
 
-        logger_kernel_write(vec, 3);
+        logger_kernel_write(log, vec, 3);
     }
 }
 #endif

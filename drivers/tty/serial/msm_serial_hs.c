@@ -243,6 +243,7 @@ static void msm_hs_start_rx_locked(struct uart_port *uport);
 static void msm_serial_hs_rx_tlet(unsigned long tlet_ptr);
 static void flip_insert_work(struct work_struct *work);
 static void msm_hs_bus_voting(struct msm_hs_port *msm_uport, unsigned int vote);
+static spinlock_t unvote_lock;
 
 #define UARTDM_TO_MSM(uart_port) \
 	container_of((uart_port), struct msm_hs_port, uport)
@@ -323,16 +324,21 @@ static int msm_hs_clock_vote(struct msm_hs_port *msm_uport)
 
 static void msm_hs_clock_unvote(struct msm_hs_port *msm_uport)
 {
-	int rc = atomic_dec_return(&msm_uport->clk_count);
+	int rc = 0;
+	unsigned long flags;
 
-	if (rc < 0) {
-		msm_hs_bus_voting(msm_uport, BUS_RESET);
-		WARN(rc, "msm_uport->clk_count < 0!");
-		dev_err(msm_uport->uport.dev,
-			"%s: Clocks count invalid  [%d]\n", __func__,
-			atomic_read(&msm_uport->clk_count));
+	spin_lock_irqsave(&unvote_lock, flags);
+	if (atomic_read(&msm_uport->clk_count) == 0) {
+		spin_unlock_irqrestore(&unvote_lock, flags);
+                WARN(1, "msm_uport->clk_count = 0!");
+                dev_err(msm_uport->uport.dev,
+                        "%s: Clocks count invalid  [%d]\n", __func__,
+                        atomic_read(&msm_uport->clk_count));
 		return;
 	}
+
+	rc  = atomic_dec_return(&msm_uport->clk_count);
+	spin_unlock_irqrestore(&unvote_lock, flags);
 
 	if (0 == rc) {
 		msm_hs_bus_voting(msm_uport, BUS_RESET);
@@ -3093,6 +3099,7 @@ static int __devinit msm_hs_probe(struct platform_device *pdev)
 	mutex_init(&msm_uport->clk_mutex);
 	atomic_set(&msm_uport->clk_count, 0);
 
+	spin_lock_init(&unvote_lock);
 
 	/* Initialize SPS HW connected with UART core */
 	if (is_blsp_uart(msm_uport)) {
@@ -3266,12 +3273,12 @@ static void msm_hs_shutdown(struct uart_port *uport)
 	 */
 	mb();
 
+	msm_hs_clock_unvote(msm_uport);
 	if (msm_uport->clk_state != MSM_HS_CLK_OFF) {
 		/* to balance clk_state */
 		msm_hs_clock_unvote(msm_uport);
 		wake_unlock(&msm_uport->dma_wake_lock);
 	}
-	msm_hs_clock_unvote(msm_uport);
 
 	msm_uport->clk_state = MSM_HS_CLK_PORT_OFF;
 	dma_unmap_single(uport->dev, msm_uport->tx.dma_base,

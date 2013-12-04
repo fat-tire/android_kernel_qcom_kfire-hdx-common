@@ -25,7 +25,11 @@
 #define KEY_PRESSED 1
 #define KEY_RELEASED 0
 
-#define TIMEOUT_VALUE 1200  // mini-second
+#ifdef CONFIG_ARCH_MSM8974_APOLLO
+#define TIMEOUT_VALUE 1900
+#else
+#define TIMEOUT_VALUE 1200
+#endif
 #define ENABLE_REGULATOR
 
 struct regulator *vcc_reg = NULL;
@@ -110,7 +114,8 @@ static const char *hall_name[] = {
   "CAMERA",
 #endif
 };
-static const char *WAKELOCK = "HallSensor 1200000000";
+
+static const char *WAKELOCK = "HallSensor 2000000000";
 //----------------------------------------------------
 #define BU52061_FTM_PORTING
 
@@ -348,8 +353,39 @@ static void hall_handle_event(int i)
 
 static void hall_timeout_report(unsigned long arg)
 {
-  int i = 0;
-  hall_handle_event(i);
+  int i=0;
+  struct input_dev *dev = g_bu52061_data->dev[i];
+
+  for (i=0; i<MAX_SENSORS; i++){
+    gHallEventInfo[i].hall_current_status = gpio_get_value(g_bu52061_data->irq_gpio[i]);
+  }
+
+  i = 0;
+  printk(KERN_DEBUG "BU52061: %s %s hall_%d_current_status = %s\n", __func__, hall_name[i], i,
+         gHallEventInfo[i].hall_current_status ? "HALL_OPENED" : "HALL_CLOSED");
+  printk(KERN_DEBUG "BU52061: %s %s gHallEventInfo[%d].bl_status = %s\n", __func__, hall_name[i], i,
+         gHallEventInfo[i].bl_status ? "BL_ON" : "BL_OFF");
+
+  if (gHallEventInfo[i].ignore_hall_event == false) {
+#ifdef CONFIG_ARCH_MSM8974_APOLLO
+    if (gHallEventInfo[2].hall_current_status == HALL_CLOSED)
+#endif
+      {
+        /*Hall sensor State Machine: only two cases need to send power key event:
+          1.close book-cover in Normal mode(BL_ON) 2.open book-cover in Suspend mode(BL_OFF) */
+        if (((gHallEventInfo[i].bl_status == BL_ON) && (gHallEventInfo[i].hall_current_status == HALL_CLOSED)) ||
+            ((gHallEventInfo[i].bl_status == BL_OFF) && (gHallEventInfo[i].hall_current_status == HALL_OPENED))) {
+
+          printk(KERN_INFO "BU52061: %s KEY_POWER = %s\n", __func__, gHallEventInfo[i].bl_status ? "OFF" : "ON");
+          gHallEventInfo[i].previous_bl_status = gHallEventInfo[i].bl_status;
+          input_report_key(dev, KEY_POWER, KEY_PRESSED);
+          input_sync(dev);
+          mdelay(20);
+          input_report_key(dev, KEY_POWER, KEY_RELEASED);
+          input_sync(dev);
+        }
+      }
+  }
 }
 
 static void hall_init_timer(void)
@@ -362,31 +398,47 @@ static void hall_init_timer(void)
   printk(KERN_DEBUG "BU52061 hall_init_timer Done\n");
 }
 
+#ifdef CONFIG_ARCH_MSM8974_THOR
+static void bu52061_irq_work(struct work_struct *work)
+{
+  hall_handle_event(0);
+  mod_timer(&hall_timer, jiffies + ((TIMEOUT_VALUE*HZ)/1000));
+#ifdef CONFIG_PM_WAKELOCKS
+  pm_wake_lock(WAKELOCK);
+#endif
+}
+#else
 static void bu52061_irq_work(struct work_struct *work)
 {
   int i;
-
   for (i=0; i<MAX_SENSORS; i++){
     if (&g_bu52061_data->irq_work[i] == work){
       hall_handle_event(i);
       if(i == 0){
         mod_timer(&hall_timer, jiffies + ((TIMEOUT_VALUE*HZ)/1000));
-#ifdef CONFIG_PM_WAKELOCKS
-        pm_wake_lock(WAKELOCK);
-#endif
       }
       break;
     }
   }
 }
+#endif
 
 static irqreturn_t bu52061_interrupt(int irq, void *dev_id)
 {
   int i;
   printk(KERN_ERR "BU52061 bu52061_interrupt irq = %d \n", irq);
+
+#ifdef CONFIG_PM_WAKELOCKS
+  pm_wake_lock(WAKELOCK);
+#endif
+
   for (i=0; i<MAX_SENSORS; i++){
     if (irq == g_bu52061_data->irq[i]){
+#ifdef CONFIG_ARCH_MSM8974_THOR
+      schedule_delayed_work(&g_bu52061_data->irq_work[i], msecs_to_jiffies(750));
+#else
       schedule_work(&g_bu52061_data->irq_work[i]);
+#endif
       break;
     }
   }
@@ -479,6 +531,7 @@ static int __devinit bu52061_probe(struct platform_device *pdev)
   enum of_gpio_flags flags;
   int i;
   struct device_node *node;
+  unsigned long irqflags;
 
   node = pdev->dev.of_node;
   if (node == NULL)
@@ -537,14 +590,21 @@ static int __devinit bu52061_probe(struct platform_device *pdev)
     }
     g_bu52061_data->irq[i] = platform_get_irq(pdev, i);
     printk(KERN_ERR "[%s:%d] gpio %d setup properly irq %d \n", __func__, __LINE__, g_bu52061_data->irq_gpio[i], g_bu52061_data->irq[i]);
-    if(g_bu52061_data->irq_gpio[i] != 33){
-      enable_irq_wake(g_bu52061_data->irq[i]);
-    }
+
+#ifdef CONFIG_ARCH_MSM8974_THOR
+    INIT_DELAYED_WORK(&g_bu52061_data->irq_work[i], bu52061_irq_work);
+#else
     INIT_WORK(&g_bu52061_data->irq_work[i], bu52061_irq_work);
-    ret = request_threaded_irq(g_bu52061_data->irq[i], NULL, bu52061_interrupt, IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING | IRQF_NO_SUSPEND, bu52061_irqs[i], NULL);
+#endif
+    irqflags = IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING | IRQF_NO_SUSPEND | IRQF_FORCE_RESUME | IRQF_EARLY_RESUME;
+    ret = request_threaded_irq(g_bu52061_data->irq[i], NULL, bu52061_interrupt, irqflags, bu52061_irqs[i], NULL);
     if (ret) {
       printk(KERN_ERR "bu52061 request_irq %d failed, return:%d\n", g_bu52061_data->irq[i], ret);
       goto fail3;
+    }
+
+    if(g_bu52061_data->irq_gpio[i] != 33){
+      enable_irq_wake(g_bu52061_data->irq[i]);
     }
 
     gHallEventInfo[i].hall_current_status = gpio_get_value(g_bu52061_data->irq_gpio[i]);
@@ -630,7 +690,11 @@ static void bu52061_shutdown(struct platform_device *pdev)
   int i;
   printk(KERN_INFO "bu52061: shutdown\n");
   for (i=0; i<MAX_SENSORS; i++)
+#ifdef CONFIG_ARCH_MSM8974_THOR
+    cancel_delayed_work_sync(&g_bu52061_data->irq_work[i]);
+#else
     cancel_work_sync(&g_bu52061_data->irq_work[i]);
+#endif
 }
 
 static int bu52061_suspend(struct device *dev)
@@ -651,6 +715,7 @@ static int bu52061_resume(struct device *dev)
 	for (i = 0; i < MAX_SENSORS; i++) {
 		gHallEventInfo[i].bl_status = BL_ON;
 		gHallEventInfo[i].previous_bl_status = BL_OFF;
+                check_irq_resend(irq_to_desc(g_bu52061_data->irq[i]), g_bu52061_data->irq[i]);
 		if (i == 2)
 			hall_handle_event(i);
 	}

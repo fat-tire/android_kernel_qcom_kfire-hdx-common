@@ -43,9 +43,10 @@
 #define QPNP_PON_POFF_REASON_METRICS(base)	(base + 0x8D)
 #define QPNP_PON_METRICS_MAGIC			0xab
 #define QPNP_PON_POFF_REASON_SWWD(base)		(base + 0x8E)
-#define PANIC_METRICS_MASK				0xcd
 #define WD_METRICS_MASK				0x3
 #define SW_WD_CLEAR				0x00
+#define PANIC_METRICS_MASK			0xcd
+#define SWWD_METRICS_MASK			0xab
 #endif
 #define QPNP_PON_SOFT_RESET_REASON1(base)	(base + 0x0E)
 #define QPNP_PON_SOFT_RESET_REASON2(base)	(base + 0x0F)
@@ -295,24 +296,51 @@ int qpnp_pon_system_pwr_off(bool reset)
 EXPORT_SYMBOL(qpnp_pon_system_pwr_off);
 
 #if defined(CONFIG_AMAZON_METRICS_LOG)
-int qpnp_pon_record_sw_wd(void)
+int qpnp_pon_record_sw_wd(bool from_charging)
 {
 	int rc;
+	u16 wdreg1, temp_wdreg;
 	u8 wdreg = PANIC_METRICS_MASK;
 
 	struct qpnp_pon *pon = sys_reset_dev;
-
 	if (!pon)
 		return -ENODEV;
 
-	rc = spmi_ext_register_writel(pon->spmi->ctrl, pon->spmi->sid,
-					QPNP_PON_POFF_REASON_SWWD(pon->base),
-					&wdreg, 1);
+	if (from_charging) {
+		rc = spmi_ext_register_readl(pon->spmi->ctrl, pon->spmi->sid,
+				QPNP_PON_POFF_REASON_SWWD(pon->base),
+				(u8 *) &wdreg1, 2);
+		if (rc) {
+			dev_err(&pon->spmi->dev,
+				"Unable to read wdreg1\n");
+			return rc;
+		}
 
-	if (rc) {
-		dev_err(&pon->spmi->dev,
-				"Unable to write record_metrics\n");
-		return rc;
+		temp_wdreg = wdreg1 & 0x00FF;
+		wdreg1 = temp_wdreg >> 8;
+		wdreg1 |= SWWD_METRICS_MASK;
+		wdreg1 = wdreg1 << 8;
+		temp_wdreg = temp_wdreg | wdreg1;
+
+		rc = spmi_ext_register_writel(pon->spmi->ctrl, pon->spmi->sid,
+					QPNP_PON_POFF_REASON_SWWD(pon->base),
+					(u8 *) &temp_wdreg, 2);
+
+		if (rc) {
+			dev_err(&pon->spmi->dev,
+				"Unable to write temp_wdreg\n");
+			return rc;
+		}
+	} else {
+		rc = spmi_ext_register_writel(pon->spmi->ctrl, pon->spmi->sid,
+				QPNP_PON_POFF_REASON_SWWD(pon->base),
+				&wdreg, 1);
+		udelay(500);
+		if (rc) {
+			dev_err(&pon->spmi->dev,
+				"Unable to write wdreg\n");
+			return rc;
+		}
 	}
 
 	return rc;
@@ -340,55 +368,6 @@ int qpnp_pon_record_normpoff(void)
 	return rc;
 }
 EXPORT_SYMBOL(qpnp_pon_record_normpoff);
-
-int qpnp_pon_system_pwr_off_metrics()
-{
-	int rc;
-	u16 rst_en_reg;
-	struct qpnp_pon *pon = sys_reset_dev;
-
-	if (!pon)
-		return -ENODEV;
-
-	/* Rev3 pmic changes RST_CTL enable register */
-	rst_en_reg = (qpnp_pon_version(pon) >= 0x03) ?
-		QPNP_PON_PS_HOLD_RST_CTL2(pon->base) :
-		QPNP_PON_PS_HOLD_RST_CTL(pon->base);
-
-	rc = qpnp_pon_masked_write(pon, rst_en_reg, QPNP_PON_RESET_EN, 0);
-	if (rc)
-		dev_err(&pon->spmi->dev,
-			"Unable to write to addr=%x, rc(%d)\n", rst_en_reg, rc);
-
-	/*
-	 * We need 10 sleep clock cycles here. But since the clock is
-	 * internally generated, we need to add 50% tolerance to be
-	 * conservative.
-	 */
-	udelay(500);
-
-	rc = qpnp_pon_masked_write(pon, QPNP_PON_PS_HOLD_RST_CTL(pon->base),
-			   QPNP_PON_POWER_OFF_MASK, PON_POWER_OFF_HARD_RESET);
-	if (rc)
-		dev_err(&pon->spmi->dev,
-			"Unable to write to addr=%x, rc(%d)\n",
-				QPNP_PON_PS_HOLD_RST_CTL(pon->base), rc);
-
-	/*
-	* We need 10 sleep clock cycles here. But since the clock is
-	* internally generated, we need to add 50% tolerance to be
-	* conservative.
-	*/
-	udelay(500);
-
-	rc = qpnp_pon_masked_write(pon, rst_en_reg, QPNP_PON_RESET_EN,
-						    QPNP_PON_RESET_EN);
-	if (rc)
-		dev_err(&pon->spmi->dev,
-			"Unable to write to addr=%x, rc(%d)\n", rst_en_reg, rc);
-	return rc;
-}
-EXPORT_SYMBOL(qpnp_pon_system_pwr_off_metrics);
 #endif
 /**
  * qpnp_pon_is_warm_reset - Checks if the PMIC went through a warm reset.
@@ -1068,10 +1047,11 @@ static int __devinit qpnp_pon_print_reset_reason(struct qpnp_pon *pon)
 	char *reset_reason;
 	char *poweron_reason = NULL;
 #if defined(CONFIG_AMAZON_METRICS_LOG)
-	u8 poff_metrics, swwd_metrics;
+	u8 poff_metrics;
 	u8 clear_metrics = 0x00;
 	void __iomem *sw_watchdog;
 	u8 wdreg;
+	u16 swwd_metrics, clear_two = 0x0000;
 #endif
 
 	rc = spmi_ext_register_readl(pon->spmi->ctrl, pon->spmi->sid,
@@ -1140,7 +1120,7 @@ static int __devinit qpnp_pon_print_reset_reason(struct qpnp_pon *pon)
 
 	rc = spmi_ext_register_readl(pon->spmi->ctrl, pon->spmi->sid,
 				QPNP_PON_POFF_REASON_SWWD(pon->base),
-				(u8 *) &swwd_metrics, 1);
+				(u8 *) &swwd_metrics, 2);
 
 	if (rc) {
 		dev_err(&pon->spmi->dev, "Unable to read swwd_metrics reason\n");
@@ -1149,7 +1129,7 @@ static int __devinit qpnp_pon_print_reset_reason(struct qpnp_pon *pon)
 	/* make sure to clear the register */
 	rc = spmi_ext_register_writel(pon->spmi->ctrl, pon->spmi->sid,
 				QPNP_PON_POFF_REASON_SWWD(pon->base),
-				&clear_metrics, 1);
+				(u8 *) &clear_two, 2);
 	if (rc) {
 		dev_err(&pon->spmi->dev, "Unable to write sw clear_metrics status\n");
 		return rc;
@@ -1163,11 +1143,18 @@ static int __devinit qpnp_pon_print_reset_reason(struct qpnp_pon *pon)
 			reset_reason = "wdog";
 		}
 #if defined(CONFIG_AMAZON_METRICS_LOG)
-		else if (warm_reason && (swwd_metrics & PANIC_METRICS_MASK))
+		else if (warm_reason && ((swwd_metrics & 0x00FF) ==
+						PANIC_METRICS_MASK))
 			reset_reason = "panic";
-
-		else if (warm_reason && (wdreg & WD_METRICS_MASK))
-			reset_reason = "swwd";
+		else if (warm_reason && (wdreg & WD_METRICS_MASK)) {
+			if ((swwd_metrics & 0xFF00) == 0xab00)
+				reset_reason = "reboot";
+			else if ((swwd_metrics & 0x00FF) ==
+					PANIC_METRICS_MASK)
+				reset_reason = "panic";
+			else
+				reset_reason = "swwd";
+		}
 #endif
 		else {
 			reset_reason = "reboot";

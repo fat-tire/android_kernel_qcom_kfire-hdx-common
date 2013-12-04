@@ -496,6 +496,7 @@ static void option_instat_callback(struct urb *urb);
 #define GROVER_PRODUCT_ID			0x9002
 #define ERNIE_PRODUCT_ID			0x9003
 #define ERNIE2_PRODUCT_ID			0x9004
+#define ERNIE2_TEST_PRODUCT_ID			0x9005
 
 /* some devices interfaces need special handling due to a number of reasons */
 enum option_blacklist_reason {
@@ -1237,6 +1238,15 @@ static const struct usb_device_id option_ids[] = {
 	{ USB_DEVICE_AND_INTERFACE_INFO(LAB126_VENDOR_ID, ERNIE2_PRODUCT_ID, 0xff, 0xb, 0x1) },
 	/* Ernie2 - mdm port */
 	{ USB_DEVICE_AND_INTERFACE_INFO(LAB126_VENDOR_ID, ERNIE2_PRODUCT_ID, 0xff, 0x2, 0x1) },
+	/* Ernie2 - Diag port in normal mode */
+	{ USB_DEVICE_AND_INTERFACE_INFO(LAB126_VENDOR_ID, \
+		ERNIE2_TEST_PRODUCT_ID, 0xff, 0xb, 0x0) },
+	/* Ernie2 - Diag port in download mode */
+	{ USB_DEVICE_AND_INTERFACE_INFO(LAB126_VENDOR_ID, \
+		ERNIE2_TEST_PRODUCT_ID, 0xff, 0xb, 0x1) },
+	/* Ernie2 - mdm port */
+	{ USB_DEVICE_AND_INTERFACE_INFO(LAB126_VENDOR_ID, \
+		ERNIE2_TEST_PRODUCT_ID, 0xff, 0x2, 0x1) },
 	{ USB_DEVICE(QUALCOMM_VENDOR_ID, 0x9008)}, /* Emergency download mode */
 	{ } /* Terminating entry */
 };

@@ -1943,6 +1943,7 @@ static void mmc_blk_rw_rq_prep(struct mmc_queue_req *mqrq,
 	mmc_set_data_timeout(&brq->data, card);
 
 	brq->data.sg = mqrq->sg;
+	brq->data.orig_sg = brq->data.sg;
 	brq->data.sg_len = mmc_queue_map_sg(mq, mqrq);
 
 	/*

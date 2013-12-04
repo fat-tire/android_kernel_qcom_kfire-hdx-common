@@ -167,5 +167,7 @@ int qce_hw_support(void *handle, struct ce_hw_support *support);
 int qce_process_sha_req(void *handle, struct qce_sha_req *s_req);
 int qce_enable_clk(void *handle);
 int qce_disable_clk(void *handle);
+void qce_resume(void *pce_dev);
+void qce_suspend(void *pce_dev);
 
 #endif /* __CRYPTO_MSM_QCE_H */

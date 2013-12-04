@@ -195,6 +195,7 @@ void mmc_crypto_cipher_complete(struct crypto_async_request *req, int err)
 }
 
 #define MMC_KEY_SIZE_XTS 32
+#define MMC_AES_XTS_IV_LEN 16
 
 static int mmc_count_sg(struct scatterlist *sg, unsigned long nbytes)
 {
@@ -216,6 +217,10 @@ static int mmc_copy_sglist(struct scatterlist *in_sg, int entries,
 
 	if (out_sg && (entries > 0))
 		sg_init_table(out_sg, entries);
+	else {
+		pr_err("Either in_sg is empty or out_sg is NULL\n");
+		goto exit;
+	}
 
 	while (in_sg && entries > 0) {
 		if (&out_sg[i]) {
@@ -224,8 +229,13 @@ static int mmc_copy_sglist(struct scatterlist *in_sg, int entries,
 			i++;
 			in_sg = scatterwalk_sg_next(in_sg);
 			entries--;
+		} else {
+			pr_err("in_sg is bigger than out_sg\n");
+			i = 0;
+			goto exit;
 		}
 	}
+exit:
 	return i;
 }
 
@@ -240,6 +250,7 @@ void mmc_encrypt_req(struct mmc_host *host, struct mmc_request *mrq)
 	unsigned long data_len = 0;
 	uint32_t bytes = 0;
 	int rc = 0;
+	u8 IV[MMC_AES_XTS_IV_LEN];
 	sector_t sector = mrq->data->sector;
 
 	tfm = crypto_alloc_ablkcipher("xts(aes)", 0, 0);
@@ -274,17 +285,14 @@ void mmc_encrypt_req(struct mmc_host *host, struct mmc_request *mrq)
 
 	if (mmc_crypto_buf_idx != MAX_ENCRYPTION_BUFFERS) {
 		dst_data = mmc_crypto_bufs[mmc_crypto_buf_idx];
+		memset(dst_data, 0, MMC_512_KB);
 		out_sg = mmc_crypto_out_sg[mmc_crypto_buf_idx];
+		memset(out_sg, 0, sizeof(struct scatterlist) *
+					MAX_SCATTER_LIST_ENTRIES);
 		mmc_crypto_buf_idx = 1-mmc_crypto_buf_idx;
 	} else {
 		pr_err("%s:%s encryption buffers not available\n",
 				mmc_hostname(host), __func__);
-		goto crypto_operation_failure;
-	}
-
-	if (!dst_data) {
-		pr_err("%s:%s 0x%lx bytes Mem Alloc failed\n",
-					mmc_hostname(host), __func__, data_len);
 		goto crypto_operation_failure;
 	}
 
@@ -298,12 +306,14 @@ void mmc_encrypt_req(struct mmc_host *host, struct mmc_request *mrq)
 	if (!mmc_copy_sglist(in_sg, mrq->data->sg_len, out_sg, dst_data)) {
 		pr_err("%s:%s could not create dst sglist from in sglist\n",
 				mmc_hostname(host), __func__);
-		kfree(out_sg);
 		goto crypto_operation_failure;
 	}
 
+	memset(IV, 0, MMC_AES_XTS_IV_LEN);
+	memcpy(IV, &sector, sizeof(sector_t));
+
 	ablkcipher_request_set_crypt(req, in_sg, out_sg, data_len,
-					(void *) &sector);
+					(void *) IV);
 
 	rc = crypto_ablkcipher_encrypt(req);
 
@@ -318,14 +328,19 @@ void mmc_encrypt_req(struct mmc_host *host, struct mmc_request *mrq)
 		 */
 	case -EINPROGRESS:
 		wait_for_completion_interruptible(&result.completion);
+		if (result.err)
+			pr_err("%s:%s error = %d encrypting the request\n",
+				mmc_hostname(host), __func__, result.err);
+		else {
+			mrq->data->sg = out_sg;
+			mrq->data->sg_len = mmc_count_sg(out_sg, data_len);
+			mrq->data->orig_sg = in_sg;
+		}
 		break;
 
 	default:
 		goto crypto_operation_failure;
 	}
-
-	mrq->data->sg = out_sg;
-	mrq->data->sg_len = mmc_count_sg(out_sg, data_len);
 
 crypto_operation_failure:
 	ablkcipher_request_free(req);
@@ -344,6 +359,7 @@ void mmc_decrypt_req(struct mmc_host *host, struct mmc_request *mrq)
 	struct mmc_tcrypt_result result;
 	struct scatterlist *in_sg = mrq->data->sg;
 	int rc = 0;
+	u8 IV[MMC_AES_XTS_IV_LEN];
 	sector_t sector = mrq->data->sector;
 
 	tfm = crypto_alloc_ablkcipher("xts(aes)", 0, 0);
@@ -369,8 +385,11 @@ void mmc_decrypt_req(struct mmc_host *host, struct mmc_request *mrq)
 	crypto_ablkcipher_clear_flags(tfm, ~0);
 	crypto_ablkcipher_setkey(tfm, NULL, MMC_KEY_SIZE_XTS);
 
+	memset(IV, 0, MMC_AES_XTS_IV_LEN);
+	memcpy(IV, &sector, sizeof(sector_t));
+
 	ablkcipher_request_set_crypt(req, in_sg, in_sg,
-		mrq->data->blksz * mrq->data->blocks, (void *) &sector);
+		mrq->data->blksz * mrq->data->blocks, (void *) IV);
 
 	rc = crypto_ablkcipher_decrypt(req);
 
@@ -385,6 +404,9 @@ void mmc_decrypt_req(struct mmc_host *host, struct mmc_request *mrq)
 		 */
 	case -EINPROGRESS:
 		wait_for_completion_interruptible(&result.completion);
+		if (result.err)
+			pr_err("%s:%s error = %d decrypting the request\n",
+				mmc_hostname(host), __func__, result.err);
 		break;
 
 	default:

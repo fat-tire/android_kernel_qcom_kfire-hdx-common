@@ -185,20 +185,14 @@ int lcd_panel_enabled = 1; /* first power on do not need to wait */
 static int lp8557_bl_on(struct lp855x *lp)
 {
 	long timeWaited=0;
-	struct timeval  tv1, tv2;
 
 	dev_info(lp->dev, "bl_ON\n");
  
-	do_gettimeofday(&tv1);
 	if (!lcd_panel_enabled) {		
 		/* wait until LCD panel is ready or end of timeout */
 		timeWaited = wait_event_timeout(panel_on_waitqueue, lcd_panel_enabled, msecs_to_jiffies(1000));
 	}
-	do_gettimeofday(&tv2);
-	dev_info(lp->dev, "time usec %ld -> %ld, diff %ld, timeWaited=%ld\n", 
-		 tv1.tv_usec, tv2.tv_usec, tv2.tv_usec - tv1.tv_usec, timeWaited);
-
-	lcd_panel_enabled = 0;
+	dev_info(lp->dev, "timeWaited: %ld\n", timeWaited);
 
 	/* turn on lp855x power and init */
 	gpio_set_value(lp->pdata->gpio_enable, 1);

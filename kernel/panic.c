@@ -143,7 +143,7 @@ void panic(const char *fmt, ...)
 	if (!panic_blink)
 		panic_blink = no_blink;
 #if defined(CONFIG_AMAZON_METRICS_LOG)
-	qpnp_pon_record_sw_wd();
+	qpnp_pon_record_sw_wd(0);
 #endif
 	if (panic_timeout > 0) {
 		/*

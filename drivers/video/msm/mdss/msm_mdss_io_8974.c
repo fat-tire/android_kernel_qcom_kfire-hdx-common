@@ -245,7 +245,7 @@ void mdss_dsi_unprepare_clocks(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 		} else if ((ctrl_pdata->panel_data.panel_info.pdest == DISPLAY_2)
 		  && (left_ctrl_pdata != NULL)
 		  && (left_ctrl_pdata->mdss_dsi_clk_on == 0)) {
-			pr_err("%s: unprepare left ctrl clocks\n", __func__);
+			pr_debug("%s: unprepare left ctrl clocks\n", __func__);
 			clk_unprepare(left_ctrl_pdata->esc_clk);
 			clk_unprepare(left_ctrl_pdata->pixel_clk);
 			clk_unprepare(left_ctrl_pdata->byte_clk);

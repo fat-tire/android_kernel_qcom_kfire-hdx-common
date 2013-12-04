@@ -153,13 +153,17 @@ static void data_bridge_process_rx(struct work_struct *work)
 	if (!brdg || !brdg->ops.send_pkt || rx_halted(dev))
 		return;
 
-	while (!rx_throttled(brdg) && (skb = skb_dequeue(&dev->rx_done))) {
+	spin_lock_irqsave(&dev->rx_done.lock, flags);
+	while (!rx_throttled(brdg) && (skb = __skb_dequeue(&dev->rx_done))) {
 		dev->to_host++;
 		info = (struct timestamp_info *)skb->cb;
 		info->rx_done_sent = get_timestamp();
+		spin_unlock_irqrestore(&dev->rx_done.lock, flags);
 		/* hand off sk_buff to client,they'll need to free it */
 		retval = brdg->ops.send_pkt(brdg->ctx, skb, skb->len);
+		spin_lock_irqsave(&dev->rx_done.lock, flags);
 		if (retval == -ENOTCONN || retval == -EINVAL) {
+			spin_unlock_irqrestore(&dev->rx_done.lock, flags);
 			return;
 		} else if (retval == -EBUSY) {
 			dev->rx_throttled_cnt++;
@@ -167,6 +171,7 @@ static void data_bridge_process_rx(struct work_struct *work)
 		}
 	}
 
+	spin_unlock_irqrestore(&dev->rx_done.lock, flags);
 	spin_lock_irqsave(&dev->rx_done.lock, flags);
 	while (!list_empty(&dev->rx_idle)) {
 		if (dev->rx_done.qlen > stop_submit_urb_limit)
@@ -917,6 +922,7 @@ bridge_probe(struct usb_interface *iface, const struct usb_device_id *id)
 
 	iface_num = iface->cur_altsetting->desc.bInterfaceNumber;
 
+	pr_info("****%s\n", __func__);
 	if (iface->num_altsetting != 1) {
 		err("%s invalid num_altsetting %u\n",
 				__func__, iface->num_altsetting);
@@ -1019,6 +1025,8 @@ static void bridge_disconnect(struct usb_interface *intf)
 #define PID904C_IFACE_MASK	0x28
 #define PID9075_IFACE_MASK	0x28
 
+#define ERNIE2_TEST_IFACE_MASK	0x8
+
 static const struct usb_device_id bridge_ids[] = {
 	{ USB_DEVICE(0x5c6, 0x9001),
 	.driver_info = PID9001_IFACE_MASK,
@@ -1035,6 +1043,10 @@ static const struct usb_device_id bridge_ids[] = {
 	{ USB_DEVICE(0x5c6, 0x9075),
 	.driver_info = PID9075_IFACE_MASK,
 	},
+	{ USB_DEVICE(0x1949, 0x9005),
+	.driver_info = ERNIE2_TEST_IFACE_MASK,
+	},
+
 
 	{ } /* Terminating entry */
 };

@@ -232,17 +232,21 @@
                 hsic,ignore-cal-pad-config;
                 hsic,strobe-pad-offset = <0x2050>;
                 hsic,data-pad-offset = <0x2054>;
-                qcom,phy-susp-sof-workaround;
+		hsic,log2-itc = <0>;
+		hsic,max-log2-itc = <6>;
+	        qcom,phy-susp-sof-workaround;
                 qcom,phy-reset-sof-workaround;
                 hsic,reset-delay = <200>;
-                qcom,hsic-swfi-latency = <1>;
+		qcom,hsic-swfi-latency = <1>;
+		qcom,hsic-standalone-latency = <300>;
                 hsic,vdd-voltage-level = <1 5 7>;
        		    qcom,dis-internal-clk-gating;
                 qcom,msm-bus,name = "hsic";
-                qcom,msm-bus,num-cases = <2>;
+                qcom,msm-bus,num-cases = <3>;
                 qcom,msm-bus,num-paths = <1>;
                 qcom,msm-bus,vectors-KBps =
                 <85 512 0 0>,
+		<85 512 40000 800000>,
                 <85 512 40000 160000>;
         };
         
@@ -669,3 +673,46 @@
 	qcom,pad-drv-on = <0x7 0x4 0x4>; /* 16mA, 10mA, 10mA */
 };
 
+&spmi_bus {
+	qcom,pm8941@1 {
+		qcom,leds@d800 {
+			status = "disabled";
+		};
+
+		qcom,leds@d900 {
+			status = "disabled";
+		};
+
+		qcom,leds@da00 {
+			status = "disabled";
+		};
+
+		qcom,leds@db00 {
+			status = "disabled";
+		};
+
+		qcom,leds@dc00 {
+			status = "disabled";
+		};
+
+		qcom,leds@dd00 {
+			status = "disabled";
+		};
+
+		qcom,leds@de00 {
+			status = "disabled";
+		};
+
+		qcom,leds@df00 {
+			status = "disabled";
+		};
+
+		qcom,leds@e000 {
+			status = "disabled";
+		};
+
+		qcom,leds@e100 {
+			status = "disabled";
+		};
+	};
+};

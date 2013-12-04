@@ -27,6 +27,7 @@
 #include "mdss_fb.h"
 #include "mdss_wb.h"
 
+static int current_size;
 
 enum mdss_mdp_wb_state {
 	WB_OPEN,
@@ -60,10 +61,14 @@ struct mdss_mdp_wb_data {
 	struct msmfb_data buf_info;
 	struct mdss_mdp_data buf_data;
 	int state;
+	bool user_alloc;
 };
 
 static DEFINE_MUTEX(mdss_mdp_wb_buf_lock);
 static struct mdss_mdp_wb mdss_mdp_wb_info;
+
+static void mdss_mdp_wb_free_buffer_user(struct mdss_mdp_wb_data *node);
+static void mdss_mdp_wb_clean_nodes(struct mdss_mdp_wb *wb);
 
 #ifdef DEBUG_WRITEBACK
 /* for debugging: writeback output buffer to allocated memory */
@@ -255,6 +260,7 @@ static int mdss_mdp_wb_terminate(struct msm_fb_data_type *mfd)
 		struct mdss_mdp_wb_data *node, *temp;
 		list_for_each_entry_safe(node, temp, &wb->register_queue,
 					 registered_entry) {
+			mdss_mdp_wb_free_buffer_user(node);
 			list_del(&node->registered_entry);
 			kfree(node);
 		}
@@ -275,6 +281,9 @@ static int mdss_mdp_wb_terminate(struct msm_fb_data_type *mfd)
 static int mdss_mdp_wb_start(struct msm_fb_data_type *mfd)
 {
 	struct mdss_mdp_wb *wb = mfd_to_wb(mfd);
+	struct mdss_mdp_ctl *ctl = mfd_to_ctl(mfd);
+
+	current_size = ctl->width*ctl->height;
 
 	if (!wb) {
 		pr_err("unable to start, writeback is not initialized\n");
@@ -371,11 +380,24 @@ static struct mdss_mdp_wb_data *get_user_node(struct msm_fb_data_type *mfd,
 	struct mdss_mdp_img_data *buf;
 	int ret;
 
+
+	if (!list_empty(&wb->register_queue)) {
+		list_for_each_entry(node, &wb->register_queue, registered_entry)
+		if ((node->buf_info.memory_id == data->memory_id) &&
+			(node->buf_info.offset == data->offset)) {
+			pr_debug("found node fd=%d addr=%x\n",
+				 data->memory_id, node->buf_data.p[0].addr);
+			return node;
+		}
+	}
+
 	node = kzalloc(sizeof(struct mdss_mdp_wb_data), GFP_KERNEL);
 	if (node == NULL) {
 		pr_err("out of memory\n");
 		return NULL;
 	}
+
+	node->user_alloc = true;
 
 	node->buf_data.num_planes = 1;
 	buf = &node->buf_data.p[0];
@@ -404,12 +426,48 @@ register_fail:
 	return NULL;
 }
 
+static void mdss_mdp_wb_free_buffer_user(struct mdss_mdp_wb_data *node)
+{
+	struct mdss_mdp_img_data *buf;
+	if(node->user_alloc) {
+		buf = &node->buf_data.p[0];
+		mdss_mdp_put_img(buf);
+		node->user_alloc = false;
+	}
+}
+
+static void mdss_mdp_wb_clean_nodes(struct mdss_mdp_wb *wb)
+{
+	mutex_lock(&wb->lock);
+	if (!list_empty(&wb->register_queue)) {
+		struct mdss_mdp_wb_data *node, *temp;
+		list_for_each_entry_safe(node, temp, &wb->register_queue,
+					 registered_entry) {
+			mdss_mdp_wb_free_buffer_user(node);
+			list_del(&node->registered_entry);
+			kfree(node);
+		}
+	}
+	mutex_unlock(&wb->lock);
+}
+
 static int mdss_mdp_wb_queue(struct msm_fb_data_type *mfd,
 				struct msmfb_data *data, int local)
 {
 	struct mdss_mdp_wb *wb = mfd_to_wb(mfd);
 	struct mdss_mdp_wb_data *node = NULL;
+	struct mdss_mdp_ctl *ctl = mfd_to_ctl(mfd);
 	int ret = 0;
+        if(ctl) {
+		if(current_size  != ctl->width*ctl->height) {
+			pr_debug("Dimensions changed ... (%d,%d)",ctl->width,ctl->height);
+			if(!local) {
+				/*Clean Up Userspace allocated buffer*/
+				mdss_mdp_wb_clean_nodes(wb);
+			}
+			current_size = ctl->width*ctl->height;
+		}
+	}
 
 	if (!wb) {
 		pr_err("unable to queue, writeback is not initialized\n");
@@ -480,8 +538,6 @@ static int mdss_mdp_wb_dequeue(struct msm_fb_data_type *mfd,
 		memcpy(data, &node->buf_info, sizeof(*data));
 
 		buf = &node->buf_data.p[0];
-		if(!local)
-			mdss_mdp_put_img(buf);
 		pr_debug("found node addr=%x len=%d\n", buf->addr, buf->len);
 	} else {
 		pr_debug("node is NULL, wait for next\n");
@@ -508,6 +564,11 @@ int mdss_mdp_wb_kickoff(struct msm_fb_data_type *mfd)
 		.callback_fnc = mdss_mdp_wb_callback,
 		.priv_data = &comp,
 	};
+
+	if (!ctl) {
+		pr_err("display function not set\n");
+		return -ENODEV;
+	}
 
 	if (!ctl->power_on)
 		return 0;
@@ -584,6 +645,7 @@ int mdss_mdp_wb_set_mirr_hint(struct msm_fb_data_type *mfd, int hint)
 	case MDP_WRITEBACK_MIRROR_PAUSE:
 	case MDP_WRITEBACK_MIRROR_RESUME:
 	case MDP_WRITEBACK_MIRROR_OFF:
+	case MDP_WRITEBACK_MIRROR_STARTING:
 		pr_info("wfd state switched to %d\n", hint);
 		switch_set_state(&wb_ctrl->sdev, hint);
 		return 0;

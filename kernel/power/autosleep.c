@@ -10,6 +10,12 @@
 #include <linux/mutex.h>
 #include <linux/pm_wakeup.h>
 
+//ACOS_MOD_BEGIN
+#ifdef CONFIG_AMAZON_EVENT_LOG
+#include <linux/eventlog.h>
+#endif
+//ACOS_MOD_END
+//
 #include "power.h"
 
 static suspend_state_t autosleep_state;
@@ -43,8 +49,17 @@ static void try_to_suspend(struct work_struct *work)
 	}
 	if (autosleep_state >= PM_SUSPEND_MAX)
 		hibernate();
-	else
+	else {
+		//ACOS_MOD_BEGIN
+#ifdef CONFIG_AMAZON_EVENT_LOG
+		log_to_events(TAG_PM_STATE, "suspend");
+#endif
 		pm_suspend(autosleep_state);
+#ifdef CONFIG_AMAZON_EVENT_LOG
+		log_to_events(TAG_PM_STATE, "resume");
+#endif
+		//ACOS_MOD_END
+	}
 
 	mutex_unlock(&autosleep_lock);
 

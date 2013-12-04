@@ -40,7 +40,7 @@
 #include <linux/gpio.h>
 #include <linux/of_gpio.h>
 #include <linux/proc_fs.h>
-
+#include <linux/module.h>
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci_core.h>
 
@@ -48,6 +48,19 @@
 #ifdef CONFIG_SERIAL_MSM_HS
 #include <mach/msm_serial_hs.h>
 #endif
+
+#include "linux/if.h"
+#include "linux/socket.h"
+#include "linux/netlink.h"
+#define NETLINK_ATHBT_EVENT       (NETLINK_GENERIC + 14)
+static struct sock *athbt_nl_sock;
+static u32 gpid;
+
+static int major;
+#define ATH_LPM _IOW('H', 243, int)
+//static DECLARE_COMPLETION(host_wake);
+
+void athbt_netlink_send(char *event_data, u32 event_datalen);
 
 static int enableuartsleep = 1;
 module_param(enableuartsleep, int, 0644);
@@ -115,7 +128,7 @@ struct ath_struct {
 
 static void hsuart_serial_clock_on(struct uart_port *port)
 {
-	BT_DBG("");
+	BT_INFO("hsuart_serial_clock_on");
 	if (port)
 		msm_hs_request_clock_on(port);
 	else
@@ -124,7 +137,7 @@ static void hsuart_serial_clock_on(struct uart_port *port)
 
 static void hsuart_serial_clock_off(struct uart_port *port)
 {
-	BT_DBG("");
+	BT_INFO("hsuart_serial_clock_off");
 	if (port)
 		msm_hs_request_clock_off(port);
 	else
@@ -145,7 +158,7 @@ static int ath_wakeup_ar3k(void)
 	int status = 0;
 	if (test_bit(BT_TXEXPIRED, &flags)) {
 		hsuart_serial_clock_on(bsi->uport);
-		BT_DBG("wakeup device\n");
+		BT_INFO("wakeup device\n");
 		gpio_set_value(bsi->ext_wake, 0);
 		msleep(20);
 		gpio_set_value(bsi->ext_wake, 1);
@@ -158,11 +171,13 @@ static int ath_wakeup_ar3k(void)
 static void wakeup_host_work(struct work_struct *work)
 {
 
-	BT_DBG("wake up host");
+	BT_INFO("wake up host");
 	if (test_bit(BT_SLEEPENABLE, &flags)) {
 		if (test_bit(BT_TXEXPIRED, &flags))
 			hsuart_serial_clock_on(bsi->uport);
 	}
+//	complete(&host_wake);
+	athbt_netlink_send("hostwakeup", 10);
 	if (!is_lpm_enabled)
 		modify_timer_task();
 }
@@ -636,6 +651,56 @@ static int bluesleep_populate_pinfo(struct platform_device *pdev)
 	return 0;
 }
 
+void athbt_netlink_send(char *event_data, u32 event_datalen)
+{
+        struct sk_buff *skb = NULL;
+        struct nlmsghdr *nlh;
+	int ret;
+
+        skb = nlmsg_new(NLMSG_SPACE(event_datalen), GFP_ATOMIC);
+        if (!skb) {
+                BT_ERR("%s: No memory,\n", __func__);
+                return;
+        }
+
+        nlh = nlmsg_put(skb, gpid, 0, 0 , NLMSG_SPACE(event_datalen), 0);
+        if (!nlh) {
+                BT_ERR("%s: nlmsg_put() failed\n", __func__);
+                return;
+        }
+
+        memcpy(NLMSG_DATA(nlh), event_data, event_datalen);
+
+        NETLINK_CB(skb).pid = 0;        /* from kernel */
+        NETLINK_CB(skb).dst_group = 0;  /* unicast */
+	if (athbt_nl_sock != NULL) {
+		ret = netlink_unicast(athbt_nl_sock, skb, gpid, MSG_DONTWAIT);
+	}
+}
+
+static void athbt_netlink_receive(struct sk_buff *__skb)
+{
+        struct sk_buff *skb = NULL;
+        struct nlmsghdr *nlh = NULL;
+        u_int8_t *data = NULL;
+        u_int32_t uid, pid, seq;
+
+        skb = skb_get(__skb);
+        if (skb) {
+                /* process netlink message pointed by skb->data */
+                nlh = (struct nlmsghdr *)skb->data;
+                pid = NETLINK_CREDS(skb)->pid;
+                pid = nlh->nlmsg_pid;
+                uid = NETLINK_CREDS(skb)->uid;
+                seq = nlh->nlmsg_seq;
+                data = NLMSG_DATA(nlh);
+		printk(KERN_INFO "%s, %s\n",__func__, (char *)NLMSG_DATA(nlh));
+                gpid = pid;
+                kfree_skb(skb);
+        }
+        return ;
+}
+
 static int __devinit bluesleep_probe(struct platform_device *pdev)
 {
 	int ret;
@@ -674,6 +739,16 @@ static int __devinit bluesleep_probe(struct platform_device *pdev)
 
 	bsi->irq_polarity = POLARITY_LOW;	/* low edge (falling edge) */
 
+	athbt_nl_sock = (struct sock *)netlink_kernel_create(
+		&init_net, NETLINK_ATHBT_EVENT,
+		1, &athbt_netlink_receive, NULL,
+		THIS_MODULE);
+
+	if (athbt_nl_sock == NULL) {
+		BT_ERR("%s NetLink Create Failed\n", __func__);
+		goto free_bsi;
+	}
+
 	return 0;
 
 free_bsi:
@@ -685,6 +760,8 @@ failed:
 
 static int bluesleep_remove(struct platform_device *pdev)
 {
+	netlink_kernel_release(athbt_nl_sock);
+	athbt_nl_sock = NULL;
 	kfree(bsi);
 	return 0;
 }
@@ -699,9 +776,35 @@ static struct platform_driver bluesleep_driver = {
 	},
 };
 
+long ath_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
+{
+	int ret = 0;
+	char buf = '1';
+	switch (cmd) {
+	case ATH_LPM:
+		ret = copy_to_user((char *)arg, &buf, sizeof(buf));
+
+		BT_INFO("waiting for the completion\n");
+//		wait_for_completion(&host_wake);
+
+		break;
+	default:
+		BT_ERR("Invalid IOCTL call\n");
+		return -ENOTTY;
+	}
+	return ret;
+}
+
+const struct file_operations fops_ath = {
+
+	.unlocked_ioctl = ath_ioctl,
+};
+
 int __init ath_init(void)
+
 {
 	int ret;
+	struct class *dev = class_create(THIS_MODULE, "ath_lpm");
 
 	ret = hci_uart_register_proto(&athp);
 
@@ -713,10 +816,18 @@ int __init ath_init(void)
 	}
 
 	ret = platform_driver_register(&bluesleep_driver);
+
 	if (ret) {
 		BT_ERR("Failed to register bluesleep driver");
 		return ret;
 	}
+	major = register_chrdev(0, "ath_device", &fops_ath);
+	if (major < 0) {
+		BT_ERR("failed to register char-dev with major no: %d", major);
+		return major;
+	}
+	BT_DBG("assigned major: %d\n", major);
+	device_create(dev, NULL, MKDEV(major, 0), NULL, "ath_lpm");
 
 	return 0;
 }
@@ -724,6 +835,8 @@ int __init ath_init(void)
 int __exit ath_deinit(void)
 {
 	platform_driver_unregister(&bluesleep_driver);
+
+	unregister_chrdev(major, "ath_device");
 
 	return hci_uart_unregister_proto(&athp);
 }

@@ -1047,6 +1047,13 @@ void msm_cpp_do_timeout_work(struct work_struct *work)
 
 	pr_err("cpp_timer_callback called idx:%d. (jiffies=%lu)\n",
 		del_timer_idx, jiffies);
+  
+        if(!work || !this_frame) {
+         	pr_err("Invalid work:%p, this_frame:%p, del_idx:%d\n",
+                        work, this_frame, del_timer_idx);
+		return;  
+        }
+
 	pr_err("fatal: cpp_timer expired for identity=0x%x, frame_id=%03d",
 		this_frame->identity, this_frame->frame_id);
 	cpp_timers[del_timer_idx].used = 0;

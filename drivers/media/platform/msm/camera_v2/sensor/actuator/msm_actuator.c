@@ -600,24 +600,25 @@ static int32_t msm_actuator_power_down(struct msm_actuator_ctrl_t *a_ctrl)
     uint16_t code = 0;
     uint8_t buf[2];
 	CDBG("Enter\n");
-	if (a_ctrl->vcm_enable) {
-		rc = gpio_direction_output(a_ctrl->vcm_pwd, 0);
-		if (!rc)
-			gpio_free(a_ctrl->vcm_pwd);
-	}
-	code = a_ctrl->current_lens_pos;
-	CDBG("%s: a_ctrl->curr_lens_pos = %d\n",__func__,a_ctrl->current_lens_pos);
-	while(code) {
+	if (a_ctrl->actuator_state != ACTUATOR_POWER_DOWN) {
+		if (a_ctrl->vcm_enable) {
+			rc = gpio_direction_output(a_ctrl->vcm_pwd, 0);
+			if (!rc)
+				gpio_free(a_ctrl->vcm_pwd);
+		}
+		code = a_ctrl->current_lens_pos;
+		CDBG("%s: a_ctrl->curr_lens_pos = %d\n",__func__,a_ctrl->current_lens_pos);
+		while(code) {
 
-	CDBG("%s: code is = %d\n",__func__,code);
-	code = (code > 30)?(code - 30) : 0;
-	buf[0] = (code >> 4);
-	buf[1] = ((code << 4) | 0x7) & 0xFF;
-	rc = a_ctrl->i2c_client.i2c_func_tbl->i2c_write_seq(&a_ctrl->i2c_client,
-	buf[0],
-	&buf[1], 1);
-	usleep_range(15000, 16000);
-	}
+		CDBG("%s: code is = %d\n",__func__,code);
+		code = (code > 30)?(code - 30) : 0;
+		buf[0] = (code >> 4);
+		buf[1] = ((code << 4) | 0x7) & 0xFF;
+		rc = a_ctrl->i2c_client.i2c_func_tbl->i2c_write_seq(&a_ctrl->i2c_client,
+		buf[0],
+		&buf[1], 1);
+		usleep_range(15000, 16000);
+		}
  #if 0
 	for (i = 0; i < 10; i++) {
 		code -=30;
@@ -631,17 +632,19 @@ static int32_t msm_actuator_power_down(struct msm_actuator_ctrl_t *a_ctrl)
 		}
 	}
 #endif
-	buf[0] = buf[1] =  0;
-	rc = a_ctrl->i2c_client.i2c_func_tbl->i2c_write_seq(&a_ctrl->i2c_client,
-		buf[0],
-		&buf[1], 1);
+		buf[0] = buf[1] =  0;
+		rc = a_ctrl->i2c_client.i2c_func_tbl->i2c_write_seq(&a_ctrl->i2c_client,
+			buf[0],
+			&buf[1], 1);
 
-	usleep_range(8000, 9000);
-	kfree(a_ctrl->step_position_table);
-	a_ctrl->step_position_table = NULL;
-	kfree(a_ctrl->i2c_reg_tbl);
-	a_ctrl->i2c_reg_tbl = NULL;
-	a_ctrl->i2c_tbl_index = 0;
+		usleep_range(8000, 9000);
+		kfree(a_ctrl->step_position_table);
+		a_ctrl->step_position_table = NULL;
+		kfree(a_ctrl->i2c_reg_tbl);
+		a_ctrl->i2c_reg_tbl = NULL;
+		a_ctrl->i2c_tbl_index = 0;
+		a_ctrl->actuator_state = ACTUATOR_POWER_DOWN;
+	}
 	CDBG("Exit\n");
 	return rc;
 }
@@ -757,6 +760,7 @@ static int32_t msm_actuator_init(struct msm_actuator_ctrl_t *a_ctrl,
 
 	a_ctrl->curr_step_pos = 0;
 	a_ctrl->curr_region_index = 0;
+	a_ctrl->actuator_state = ACTUATOR_POWER_UP;
 	CDBG("Exit\n");
 
 	return rc;

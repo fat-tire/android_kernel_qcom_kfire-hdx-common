@@ -127,6 +127,23 @@ static int rmnet_usb_resume(struct usb_interface *iface)
 	return retval;
 }
 
+int rmnet_usb_reset_resume(struct usb_interface *iface)
+{
+	struct usbnet           *unet;
+	struct rmnet_ctrl_dev   *dev;
+
+	char *reset_resume[2]   = {"QMI_STATE=RESET_RESUME", NULL};
+	
+	unet = usb_get_intfdata(iface);
+
+	dev = (struct rmnet_ctrl_dev *)unet->data[1];
+
+	kobject_uevent_env(&dev->devicep->kobj, KOBJ_CHANGE,
+					reset_resume);
+
+	return 0;
+}
+
 static int rmnet_usb_bind(struct usbnet *usbnet, struct usb_interface *iface)
 {
 	struct usb_host_endpoint	*endpoint = NULL;
@@ -516,7 +533,7 @@ static int rmnet_usb_probe(struct usb_interface *iface,
 	status = usbnet_probe(iface, prod);
 	if (status < 0) {
 		dev_err(&iface->dev, "usbnet_probe failed %d\n", status);
-		goto out;
+		goto usbnet_err;
 	}
 	unet = usb_get_intfdata(iface);
 
@@ -529,7 +546,7 @@ static int rmnet_usb_probe(struct usb_interface *iface,
 	/*create /sys/class/net/rmnet_usbx/dbg_mask*/
 	status = device_create_file(&unet->net->dev, &dev_attr_dbg_mask);
 	if (status)
-		goto out;
+		goto dev_create_err;
 
 	if (first_rmnet_iface_num == -EINVAL)
 		first_rmnet_iface_num = iface_num;
@@ -541,7 +558,7 @@ static int rmnet_usb_probe(struct usb_interface *iface,
 	status = rmnet_usb_ctrl_probe(iface, unet->status,
 		(struct rmnet_ctrl_dev *)unet->data[1]);
 	if (status)
-		goto out;
+		goto ctrl_probe_err;
 
 	status = rmnet_usb_data_debugfs_init(unet);
 	if (status)
@@ -559,6 +576,14 @@ static int rmnet_usb_probe(struct usb_interface *iface,
 	unet->intf->needs_remote_wakeup = 1;
 
 out:
+	return status;
+
+ctrl_probe_err:
+	device_remove_file(&unet->net->dev, &dev_attr_dbg_mask);
+dev_create_err:
+	usbnet_disconnect(iface);
+usbnet_err:
+
 	return status;
 }
 
@@ -681,6 +706,7 @@ static struct usb_driver rmnet_usb = {
 	.disconnect = rmnet_usb_disconnect,
 	.suspend    = rmnet_usb_suspend,
 	.resume     = rmnet_usb_resume,
+	.reset_resume     = rmnet_usb_reset_resume,
 	.supports_autosuspend = true,
 };
 

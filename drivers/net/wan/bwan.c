@@ -83,8 +83,6 @@ static struct platform_device *ehci_hcd_pdev;
 
 static struct work_struct bwan_work;
 
-static struct regulator *ldo_l10 = NULL;
-
 #define bwan_pulse_gpio_wan_on(hold_time)			\
 do {								\
 	bwan_gpio_wan_on(LOW);					\
@@ -753,14 +751,6 @@ static int bwan_gpio_init(struct platform_device *pdev)
 			return -1;
 	}
 
-	ldo_l10 = regulator_get(&pdev->dev, "8941_l10");
-        if(ldo_l10) {
-		int ret;
-		ret=regulator_enable(ldo_l10);
-	} else {
-		printk("Failed to get 8941_l10!\n");
-	}
-
 	bwan_request_gpio();
 
 	return 0;
@@ -769,12 +759,6 @@ static int bwan_gpio_init(struct platform_device *pdev)
 static void bwan_gpio_deinit(void)
 {
 	bwan_free_gpio();
-
-	if(ldo_l10) {
-		regulator_disable(ldo_l10);
-		regulator_put(ldo_l10);
-		ldo_l10 = NULL;
-	}
 }
 
 static bool has_wan_onoff_rework(void)

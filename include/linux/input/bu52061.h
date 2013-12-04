@@ -35,7 +35,11 @@ extern int pm_wake_unlock(const char *buf);
 struct bu52061_platform_data {
   struct input_dev *dev[MAX_SENSORS];
   atomic_t used;
+#ifdef CONFIG_ARCH_MSM8974_THOR
+  struct delayed_work irq_work[MAX_SENSORS];
+#else
   struct work_struct irq_work[MAX_SENSORS];
+#endif
   unsigned int irq[MAX_SENSORS];
   unsigned int irq_gpio[MAX_SENSORS];
   int (*init_irq)(void);

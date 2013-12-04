@@ -173,8 +173,6 @@ static void sdhci_dump_state(struct sdhci_host *host)
 
 static void sdhci_dumpregs(struct sdhci_host *host)
 {
-	u32 present_state;
-
 	pr_info(DRIVER_NAME ": =========== REGISTER DUMP (%s)===========\n",
 		mmc_hostname(host->mmc));
 
@@ -221,17 +219,7 @@ static void sdhci_dumpregs(struct sdhci_host *host)
 
 	sdhci_dump_state(host);
 	sdhci_dump_irq_buffer(host);
-
 	pr_info(DRIVER_NAME ": ===========================================\n");
-	
-	/*
-	 * If DAT[3:0] level is not 1111b, then trigger kernel panic since it is data timeout already 
-	 */
-	present_state = sdhci_readl(host, SDHCI_PRESENT_STATE); 
-	if (!((present_state & SDHCI_DATA_LVL_MASK) == SDHCI_DATA_LVL_MASK))
-		panic("%s: EMMC data timeout  data line is 0x%x\n", 
-			mmc_hostname(host->mmc),
-			(present_state & SDHCI_DATA_LVL_MASK));
 }
 
 /*****************************************************************************\

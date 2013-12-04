@@ -32,11 +32,15 @@ struct qseecom_handle {
 	uint32_t sbuf_len; /* in/out */
 };
 
+extern bool qseecom_created_key_flag;
+
 int qseecom_start_app(struct qseecom_handle **handle,
 						char *app_name, uint32_t size);
 int qseecom_shutdown_app(struct qseecom_handle **handle);
 int qseecom_send_command(struct qseecom_handle *handle, void *send_buf,
 			uint32_t sbuf_len, void *resp_buf, uint32_t rbuf_len);
 int qseecom_set_bandwidth(struct qseecom_handle *handle, bool high);
+
+int qseecom_create_key_kclient(uint32_t usage, uint8_t *hash32);
 
 #endif /* __QSEECOM_KERNEL_H_ */

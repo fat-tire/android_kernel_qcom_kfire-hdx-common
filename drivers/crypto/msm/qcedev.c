@@ -1412,12 +1412,37 @@ static int qcedev_vbuf_ablk_cipher(struct qcedev_async_req *areq,
 			return -EFAULT;
 
 	/* Verify Destination Address's */
-	if (areq->cipher_op_req.in_place_op != 1)
-		for (i = 0; i < areq->cipher_op_req.entries; i++)
-			if (!access_ok(VERIFY_READ,
-			(void __user *)areq->cipher_op_req.vbuf.dst[i].vaddr,
-					areq->cipher_op_req.vbuf.dst[i].len))
-				return -EFAULT;
+	if (creq->in_place_op != 1) {
+		for (i = 0, total = 0; i < QCEDEV_MAX_BUFFERS; i++) {
+			if ((areq->cipher_op_req.vbuf.dst[i].vaddr != 0) &&
+						(total < creq->data_len)) {
+				if (!access_ok(VERIFY_WRITE,
+					(void __user *)creq->vbuf.dst[i].vaddr,
+						creq->vbuf.dst[i].len)) {
+					pr_err("%s:DST WR_VERIFY err %d=0x%x\n",
+						__func__, i,
+						(u32)creq->vbuf.dst[i].vaddr);
+					return -EFAULT;
+				}
+				total += creq->vbuf.dst[i].len;
+			}
+		}
+	} else  {
+		for (i = 0, total = 0; i < creq->entries; i++) {
+			if (total < creq->data_len) {
+				if (!access_ok(VERIFY_WRITE,
+					(void __user *)creq->vbuf.src[i].vaddr,
+						creq->vbuf.src[i].len)) {
+					pr_err("%s:SRC WR_VERIFY err %d=0x%x\n",
+						__func__, i,
+						(u32)creq->vbuf.src[i].vaddr);
+					return -EFAULT;
+				}
+				total += creq->vbuf.src[i].len;
+			}
+		}
+	}
+	total = 0;
 
 	if (areq->cipher_op_req.mode == QCEDEV_AES_MODE_CTR)
 		byteoffset = areq->cipher_op_req.byteoffset;
@@ -1618,6 +1643,9 @@ error:
 static int qcedev_check_cipher_params(struct qcedev_cipher_op_req *req,
 						struct qcedev_control *podev)
 {
+	uint32_t total = 0;
+	uint32_t i;
+
 	if (req->use_pmem) {
 		pr_err("%s: Use of PMEM is not supported\n", __func__);
 		goto error;
@@ -1669,7 +1697,22 @@ static int qcedev_check_cipher_params(struct qcedev_cipher_op_req *req,
 			goto error;
 		}
 	}
-
+	/* Check for sum of all dst length is equal to data_len  */
+	for (i = 0; (i < QCEDEV_MAX_BUFFERS) && (total < req->data_len); i++)
+		total += req->vbuf.dst[i].len;
+	if (total != req->data_len) {
+		pr_err("%s: Total (i=%d) dst(%d) buf size != data_len (%d)\n",
+			__func__, i, total, req->data_len);
+		goto error;
+	}
+	/* Check for sum of all src length is equal to data_len  */
+	for (i = 0, total = 0; i < req->entries; i++)
+		total += req->vbuf.src[i].len;
+	if (total != req->data_len) {
+		pr_err("%s: Total src(%d) buf size != data_len (%d)\n",
+			__func__, total, req->data_len);
+		goto error;
+	}
 	return 0;
 error:
 	return -EINVAL;

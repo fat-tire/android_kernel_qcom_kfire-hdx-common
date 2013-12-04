@@ -762,6 +762,7 @@ static int mdss_dsi_event_handler(struct mdss_panel_data *pdata,
 				 ctrl_pdata->on_cmds.link_state);
 			rc = mdss_dsi_blank(pdata);
 		}
+		msleep(40);
 		rc = mdss_dsi_off(pdata);
 		break;
 	case MDSS_EVENT_NO_FRAME_UPDATE:

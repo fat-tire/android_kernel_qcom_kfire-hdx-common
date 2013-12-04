@@ -2123,6 +2123,9 @@ int ad7146_disable(struct ad7146_chip *ad7146)
 {
 	unsigned short data;
         AD7146_Driver_Info("%s enter\n", __func__);
+
+	cancel_work_sync(&ad7146->work);
+
 	mutex_lock(&interrupt_thread_mutex);
 	ad7146->read(ad7146->dev, AD7146_PWR_CTRL, &data);
 	ad7146->power_reg_value = data;
@@ -2617,6 +2620,8 @@ err_out:
  */
 void ad7146_remove(struct ad7146_chip *ad7146)
 {
+	cancel_work_sync(&ad7146->work);
+
 	sysfs_remove_group(&ad7146->dev->kobj, &ad7146_attr_group);
 	free_irq(ad7146->irq, ad7146);
 	input_unregister_device(ad7146->input);
@@ -2628,14 +2633,25 @@ void ad7146_remove(struct ad7146_chip *ad7146)
 #ifndef CONFIG_HAS_EARLYSUSPEND
 int ad7146_i2c_suspend(struct device *dev)
 {
+	struct ad7146_chip *ad7146 = i2c_get_clientdata(to_i2c_client(dev));
+
 	printk(KERN_INFO "%s\n", __func__);
-	return ad7146_disable(i2c_get_clientdata(to_i2c_client(dev)));
+
+	disable_irq(ad7146->irq);
+
+	return ad7146_disable(ad7146);
 }
 
 int ad7146_i2c_resume(struct device *dev)
 {
+	struct ad7146_chip *ad7146 = i2c_get_clientdata(to_i2c_client(dev));
+	int err;
+
 	printk(KERN_INFO "%s\n", __func__);
-	return ad7146_enable(i2c_get_clientdata(to_i2c_client(dev)));
+	err = ad7146_enable(ad7146);
+	enable_irq(ad7146->irq);
+
+	return err;
 }
 /**
   Linux device Power manager ops structure

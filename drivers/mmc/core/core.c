@@ -868,6 +868,9 @@ static void mmc_post_req(struct mmc_host *host, struct mmc_request *mrq,
 		mmc_host_clk_release(host);
 	}
 
+	if (!err && mmc_should_encrypt(host, mrq))
+		mrq->data->sg = mrq->data->orig_sg;
+
 	if (!err && mmc_should_decrypt(host, mrq))
 		mmc_decrypt_req(host, mrq);
 }
@@ -2427,6 +2430,16 @@ int mmc_erase(struct mmc_card *card, unsigned int from, unsigned int nr,
 
 	if (to <= from)
 		return -EINVAL;
+
+	/* address alignment to 8K (16 sector) */
+	if (arg == MMC_TRIM_ARG) {
+		if ((from % 16) != 0)
+			from = ((from >> 4) + 1) << 4;
+
+		to = (to >> 4) << 4;
+		if (from >= to)
+			return 0;
+	}
 
 	/* 'from' and 'to' are inclusive */
 	to -= 1;

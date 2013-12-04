@@ -41,6 +41,7 @@
 #endif
 
 #define MAX_RAILS 5
+#define MAX_THRESHOLD 2
 
 static struct msm_thermal_data msm_thermal_info;
 static DEFINE_PER_CPU(uint32_t, limited_max_freq);
@@ -86,14 +87,14 @@ struct cpu_info {
 	bool offline;
 	bool user_offline;
 	const char *sensor_type;
-	struct sensor_threshold thresh[2];
+	struct sensor_threshold thresh[MAX_THRESHOLD];
         struct freq_mitig_info {
                struct mutex freq_mitig_mutex;
                uint32_t max_freq_limit;
                uint32_t user_max_freq_limit;
                uint32_t min_freq_limit;
                uint32_t user_min_freq_limit;
-               struct sensor_threshold thresh[2];
+               struct sensor_threshold thresh[MAX_THRESHOLD];
         } freq_mitig_data;
 };
 
@@ -1155,7 +1156,7 @@ static int hotplug_notify(enum thermal_trip_type type, int temp, void *data)
 	if (hotplug_task) {
 		complete(&hotplug_notify_complete);
                 set_threshold((char *)cpu_node->sensor_type, cpu_node->thresh,
-                       sizeof(cpu_node->thresh));
+                       MAX_THRESHOLD);
         } else
 		pr_err("%s: Hotplug task is not initialized\n", KBUILD_MODNAME);
 	return 0;
@@ -1220,7 +1221,7 @@ static void hotplug_init(void)
 		cpus[cpu].thresh[1].data = (void *)&cpus[cpu];
 
                set_threshold((char *)cpus[cpu].sensor_type, cpus[cpu].thresh,
-                       sizeof(cpus[cpu].thresh));
+                       MAX_THRESHOLD);
 	}
 	init_completion(&hotplug_notify_complete);
 	hotplug_task = kthread_run(do_hotplug, NULL, "msm_thermal:hotplug");
@@ -1322,7 +1323,7 @@ static int freq_mitigation_notify(enum thermal_trip_type type,
                if (new_req)
                        complete(&freq_mitigation_complete);
                set_threshold((char *)cpu_node->sensor_type, cpu_node->freq_mitig_data.thresh,
-                       sizeof(cpu_node->freq_mitig_data.thresh));
+                       MAX_THRESHOLD);
        } else
                pr_err("%s: Frequency mitigation task is not initialized\n",
                        KBUILD_MODNAME);
@@ -1402,7 +1403,7 @@ static void freq_mitigation_init(void)
                        freq_mitigation_notify;
                cpus[cpu].freq_mitig_data.thresh[1].data = (void *)&cpus[cpu];
                set_threshold((char *)cpus[cpu].sensor_type, cpus[cpu].freq_mitig_data.thresh,
-                       sizeof(cpus[cpu].freq_mitig_data.thresh));
+                       MAX_THRESHOLD);
        }
        init_completion(&freq_mitigation_complete);
        freq_mitigation_task = kthread_run(do_freq_mitigation, NULL,

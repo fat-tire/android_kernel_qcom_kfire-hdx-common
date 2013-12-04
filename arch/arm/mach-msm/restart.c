@@ -66,7 +66,6 @@ int pmic_reset_irq;
 static void __iomem *msm_tmr0_base;
 
 #ifdef CONFIG_MSM_DLOAD_MODE
-static bool dload_mode_enabled;
 static int in_panic;
 static void *dload_mode_addr;
 
@@ -94,7 +93,6 @@ static void set_dload_mode(int on)
 		__raw_writel(on ? 0xCE14091A : 0,
 		       dload_mode_addr + sizeof(unsigned int));
 		mb();
-		dload_mode_enabled = on;
 	}
 }
 
@@ -225,21 +223,7 @@ static void msm_restart_prepare(const char *cmd)
 	wdreg_addr = sw_wd_reg_addr();
 #endif
 	pm8xxx_reset_pwr_off(1);
-
-#if defined(CONFIG_AMAZON_METRICS_LOG)
-	if (readb_relaxed(wdreg_addr + 0x17C0)) {
-		if (cmd != NULL
-#ifdef CONFIG_MSM_DLOAD_MODE
-		|| dload_mode_enabled || in_panic
-#endif
-		|| oops_in_progress
-		)
-			qpnp_pon_system_pwr_off(1);
-		else
-			qpnp_pon_system_pwr_off_metrics();
-	} else
-#endif
-		qpnp_pon_system_pwr_off(1);
+	qpnp_pon_system_pwr_off(1);
 
 	if (cmd != NULL) {
 		if (!strncmp(cmd, "bootloader", 10)) {
@@ -258,6 +242,13 @@ static void msm_restart_prepare(const char *cmd)
 			__raw_writel(0x77665501, restart_reason);
 		}
 	}
+#if defined(CONFIG_AMAZON_METRICS_LOG)
+			/* this is to cover corner case where sw watchdog is
+			triggered and a user runs adb reboot recovery,
+			then next reset reason is still sw watchdog */
+			if (__raw_readl(wdreg_addr + 0x17C0) & 0x3)
+				qpnp_pon_record_sw_wd(1);
+#endif
 
 	flush_cache_all();
 	outer_flush_all();

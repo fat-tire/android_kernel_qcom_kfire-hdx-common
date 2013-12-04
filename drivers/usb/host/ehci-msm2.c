@@ -59,7 +59,7 @@ struct msm_hcd {
 	struct regulator			*hsusb_1p8;
 	struct regulator			*vbus;
 	struct msm_xo_voter			*xo_handle;
-	bool					async_int;
+	atomic_t				async_int;
 	bool					vbus_on;
 	atomic_t				in_lpm;
 	int					pmic_gpio_dp_irq;
@@ -863,7 +863,8 @@ static int msm_ehci_resume(struct msm_hcd *mhcd)
 		dev_dbg(mhcd->dev, "%s called in !in_lpm\n", __func__);
 		return 0;
 	}
-
+	/* Handles race with Async interrupt */
+	disable_irq(hcd->irq);
 	spin_lock_irqsave(&mhcd->wakeup_lock, flags);
 	if (mhcd->wakeup_irq_enabled) {
 		disable_irq_wake(mhcd->wakeup_irq);
@@ -938,8 +939,8 @@ skip_phy_resume:
 	usb_hcd_resume_root_hub(hcd);
 	atomic_set(&mhcd->in_lpm, 0);
 
-	if (mhcd->async_int) {
-		mhcd->async_int = false;
+	if (atomic_read(&mhcd->async_int)) {
+		atomic_set(&mhcd->async_int, 0);
 		pm_runtime_put_noidle(mhcd->dev);
 		enable_irq(hcd->irq);
 	}
@@ -948,7 +949,7 @@ skip_phy_resume:
 		atomic_set(&mhcd->pm_usage_cnt, 0);
 		pm_runtime_put_noidle(mhcd->dev);
 	}
-
+	enable_irq(hcd->irq);
 	dev_info(mhcd->dev, "EHCI USB exited from low power mode\n");
 
 	return 0;
@@ -961,7 +962,7 @@ static irqreturn_t msm_ehci_irq(struct usb_hcd *hcd)
 
 	if (atomic_read(&mhcd->in_lpm)) {
                 disable_irq_nosync(hcd->irq);
-                mhcd->async_int = true;
+		atomic_set(&mhcd->async_int, 1);
                 pm_runtime_get(mhcd->dev);
 		return IRQ_HANDLED;
 	}
@@ -1727,7 +1728,7 @@ static int ehci_msm2_pm_suspend(struct device *dev)
 
 	dev_dbg(dev, "ehci-msm2 PM suspend\n");
 
-	if (device_may_wakeup(dev))
+	if (device_may_wakeup(dev) && !mhcd->async_irq && !mhcd->wakeup_irq)
 		enable_irq_wake(hcd->irq);
 
 	return msm_ehci_suspend(mhcd);
@@ -1742,8 +1743,13 @@ static int ehci_msm2_pm_resume(struct device *dev)
 
 	dev_dbg(dev, "ehci-msm2 PM resume\n");
 
-	if (device_may_wakeup(dev))
+	if (device_may_wakeup(dev) && !mhcd->async_irq && !mhcd->wakeup_irq)
 		disable_irq_wake(hcd->irq);
+
+	if (!atomic_read(&mhcd->pm_usage_cnt) &&
+		!atomic_read(&mhcd->async_int) &&
+		pm_runtime_suspended(dev))
+		return 0;
 
 	ret = msm_ehci_resume(mhcd);
 	if (ret)

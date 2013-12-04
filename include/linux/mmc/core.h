@@ -128,6 +128,7 @@ struct mmc_data {
 	s32			host_cookie;	/* host private data */
 	bool			fault_injected; /* fault injected */
 	sector_t		sector;	/* starting sector for the data */
+	struct scatterlist      *orig_sg; /* Original I/O scatter list */
 };
 
 struct mmc_host;

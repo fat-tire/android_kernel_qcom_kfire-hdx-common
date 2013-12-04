@@ -104,6 +104,12 @@ config AMAZON_METRICS_LOG
 		Enables a new metrics log for collecting metrics information. These
 		logs will be present at /dev/log/metrics.
 
+config AMAZON_EVENT_LOG
+	bool "Amazon event logging support"
+	default y
+	help
+	       Enables to add message in event log from kernel. See log_to_events function.
+
 config AMAZON_LOG
 	bool "Amazon Log"
 	default y

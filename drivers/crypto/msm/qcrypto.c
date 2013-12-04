@@ -24,6 +24,9 @@
 #include <linux/interrupt.h>
 #include <linux/spinlock.h>
 #include <linux/debugfs.h>
+#include <linux/workqueue.h>
+#include <linux/sched.h>
+#include <linux/init.h>
 
 #include <crypto/ctr.h>
 #include <crypto/des.h>
@@ -41,10 +44,14 @@
 #include <mach/msm_bus.h>
 #include <mach/qcrypto.h>
 #include "qce.h"
+#include <linux/qseecom.h>
+#include "../../misc/qseecom_kernel.h"
 
 
 #define DEBUG_MAX_FNAME  16
 #define DEBUG_MAX_RW_BUF 1024
+
+#define QCRYPTO_HIGH_BANDWIDTH_TIMEOUT 1000
 
 struct crypto_stat {
 	u32 aead_sha1_aes_enc;
@@ -112,8 +119,14 @@ struct crypto_priv {
 	struct work_struct unlock_ce_ws;
 
 	struct tasklet_struct done_tasklet;
-};
 
+	struct timer_list bw_scale_down_timer;
+
+	struct work_struct low_bw_req_ws;
+
+	bool high_bw_req;
+
+};
 
 /*-------------------------------------------------------------------------
 * Resource Locking Service
@@ -347,38 +360,32 @@ static void _words_to_byte_stream(uint32_t *iv, unsigned char *b,
 	}
 }
 
-static void qcrypto_ce_high_bw_req(struct crypto_priv *cp, bool high_bw_req)
+static void qcrypto_ce_set_bus(struct crypto_priv *cp, bool high_bw_req)
 {
 	int ret = 0;
 
-	mutex_lock(&qcrypto_sent_bw_req);
-	if (high_bw_req) {
-		if (cp->high_bw_req_count == 0) {
-			ret = qce_enable_clk(cp->qce);
-			if (ret) {
-				pr_err("%s Unable enable clk\n", __func__);
-				mutex_unlock(&qcrypto_sent_bw_req);
-				return;
-			}
-			ret = msm_bus_scale_client_update_request(
-					cp->bus_scale_handle, 1);
-			if (ret) {
-				pr_err("%s Unable to set to high bandwidth\n",
-							__func__);
-				qce_disable_clk(cp->qce);
-				mutex_unlock(&qcrypto_sent_bw_req);
-				return;
-			}
+	if (high_bw_req && cp->high_bw_req == false) {
+		ret = qce_enable_clk(cp->qce);
+		if (ret) {
+			pr_err("%s Unable enable clk\n", __func__);
+			return;
 		}
-		cp->high_bw_req_count++;
-	} else {
-		if (cp->high_bw_req_count == 1) {
+		ret = msm_bus_scale_client_update_request(
+				cp->bus_scale_handle, 1);
+		if (ret) {
+			pr_err("%s Unable to set to high bandwidth\n",
+						__func__);
+			qce_disable_clk(cp->qce);
+			return;
+		}
+		cp->high_bw_req = true;
+		pm_stay_awake(&cp->pdev->dev);
+	} else if (high_bw_req == false && cp->high_bw_req == true) {
 			ret = msm_bus_scale_client_update_request(
 					cp->bus_scale_handle, 0);
 			if (ret) {
 				pr_err("%s Unable to set to low bandwidth\n",
 							__func__);
-				mutex_unlock(&qcrypto_sent_bw_req);
 				return;
 			}
 			ret = qce_disable_clk(cp->qce);
@@ -389,13 +396,58 @@ static void qcrypto_ce_high_bw_req(struct crypto_priv *cp, bool high_bw_req)
 				if (ret)
 					pr_err("%s Unable to set to high bandwidth\n",
 							__func__);
-				mutex_unlock(&qcrypto_sent_bw_req);
 				return;
 			}
+			cp->high_bw_req = false;
+			pm_relax(&cp->pdev->dev);
 		}
+}
+
+static void qcrypto_bw_scale_down_timer_callback(unsigned long data)
+{
+	struct crypto_priv *cp = (struct crypto_priv *)data;
+
+	schedule_work(&cp->low_bw_req_ws);
+
+	return;
+}
+
+static void qcrypto_ce_bw_scaling_req(struct crypto_priv *cp, bool high_bw_req)
+{
+	mutex_lock(&qcrypto_sent_bw_req);
+
+	if (high_bw_req) {
+		if (cp->high_bw_req_count == 0)
+			qcrypto_ce_set_bus(cp, true);
+		cp->high_bw_req_count++;
+	} else {
 		cp->high_bw_req_count--;
+		if (cp->high_bw_req_count == 0) {
+			del_timer_sync(&(cp->bw_scale_down_timer));
+			cp->bw_scale_down_timer.data =
+				(unsigned long)(cp);
+			cp->bw_scale_down_timer.expires = jiffies +
+			msecs_to_jiffies(QCRYPTO_HIGH_BANDWIDTH_TIMEOUT);
+			add_timer(&(cp->bw_scale_down_timer));
+		}
 	}
+
 	mutex_unlock(&qcrypto_sent_bw_req);
+
+	return;
+}
+
+static void qcrypto_low_bw_req_work(struct work_struct *work)
+{
+	struct crypto_priv *cp = container_of(work,
+				struct crypto_priv, low_bw_req_ws);
+
+	mutex_lock(&qcrypto_sent_bw_req);
+	if (cp->high_bw_req_count == 0)
+		qcrypto_ce_set_bus(cp, false);
+	mutex_unlock(&qcrypto_sent_bw_req);
+
+	return;
 }
 
 static int _start_qcrypto_process(struct crypto_priv *cp);
@@ -487,6 +539,7 @@ static int _qcrypto_cipher_cra_init(struct crypto_tfm *tfm)
 	struct qcrypto_cipher_ctx *ctx = crypto_tfm_ctx(tfm);
 
 	q_alg = container_of(alg, struct qcrypto_alg, cipher_alg);
+	ctx->flags = 0;
 
 	/* update context with ptr to cp */
 	ctx->cp = q_alg->cp;
@@ -494,7 +547,7 @@ static int _qcrypto_cipher_cra_init(struct crypto_tfm *tfm)
 	/* random first IV */
 	get_random_bytes(ctx->iv, QCRYPTO_MAX_IV_LENGTH);
 	if (ctx->cp->platform_support.bus_scale_table != NULL)
-		qcrypto_ce_high_bw_req(ctx->cp, true);
+		qcrypto_ce_bw_scaling_req(ctx->cp, true);
 
 	return 0;
 };
@@ -512,6 +565,8 @@ static int _qcrypto_ahash_cra_init(struct crypto_tfm *tfm)
 	/* update context with ptr to cp */
 	sha_ctx->cp = q_alg->cp;
 	sha_ctx->sg = NULL;
+	sha_ctx->flags = 0;
+
 	sha_ctx->tmp_tbuf = kzalloc(SHA_MAX_BLOCK_SIZE +
 					SHA_MAX_DIGEST_SIZE, GFP_KERNEL);
 	if (sha_ctx->tmp_tbuf == NULL) {
@@ -531,7 +586,7 @@ static int _qcrypto_ahash_cra_init(struct crypto_tfm *tfm)
 
 	sha_ctx->ahash_req = NULL;
 	if (sha_ctx->cp->platform_support.bus_scale_table != NULL)
-		qcrypto_ce_high_bw_req(sha_ctx->cp, true);
+		qcrypto_ce_bw_scaling_req(sha_ctx->cp, true);
 
 	return 0;
 };
@@ -553,7 +608,7 @@ static void _qcrypto_ahash_cra_exit(struct crypto_tfm *tfm)
 		sha_ctx->ahash_req = NULL;
 	}
 	if (sha_ctx->cp->platform_support.bus_scale_table != NULL)
-		qcrypto_ce_high_bw_req(sha_ctx->cp, false);
+		qcrypto_ce_bw_scaling_req(sha_ctx->cp, false);
 };
 
 
@@ -603,7 +658,7 @@ static void _qcrypto_cra_ablkcipher_exit(struct crypto_tfm *tfm)
 	struct qcrypto_cipher_ctx *ctx = crypto_tfm_ctx(tfm);
 
 	if (ctx->cp->platform_support.bus_scale_table != NULL)
-		qcrypto_ce_high_bw_req(ctx->cp, false);
+		qcrypto_ce_bw_scaling_req(ctx->cp, false);
 };
 
 static void _qcrypto_cra_aead_exit(struct crypto_tfm *tfm)
@@ -611,7 +666,7 @@ static void _qcrypto_cra_aead_exit(struct crypto_tfm *tfm)
 	struct qcrypto_cipher_ctx *ctx = crypto_tfm_ctx(tfm);
 
 	if (ctx->cp->platform_support.bus_scale_table != NULL)
-		qcrypto_ce_high_bw_req(ctx->cp, false);
+		qcrypto_ce_bw_scaling_req(ctx->cp, false);
 };
 
 static int _disp_stats(int id)
@@ -728,8 +783,6 @@ static int _qcrypto_remove(struct platform_device *pdev)
 	if (!cp)
 		return 0;
 
-	qcrypto_ce_high_bw_req(cp, false);
-
 	if (cp->platform_support.bus_scale_table != NULL)
 		msm_bus_scale_unregister_client(cp->bus_scale_handle);
 
@@ -741,6 +794,8 @@ static int _qcrypto_remove(struct platform_device *pdev)
 		list_del(&q_alg->entry);
 		kfree(q_alg);
 	}
+	cancel_work_sync(&cp->low_bw_req_ws);
+	del_timer_sync(&cp->bw_scale_down_timer);
 
 	if (cp->qce)
 		qce_close(cp->qce);
@@ -826,7 +881,14 @@ static int _qcrypto_setkey_des(struct crypto_ablkcipher *cipher, const u8 *key,
 	struct crypto_tfm *tfm = crypto_ablkcipher_tfm(cipher);
 	struct qcrypto_cipher_ctx *ctx = crypto_tfm_ctx(tfm);
 	u32 tmp[DES_EXPKEY_WORDS];
-	int ret = des_ekey(tmp, key);
+	int ret;
+
+	if (!key) {
+		pr_err("%s Inavlid key pointer\n", __func__);
+		return -EINVAL;
+	}
+
+	ret = des_ekey(tmp, key);
 
 	if ((ctx->flags & QCRYPTO_CTX_USE_HW_KEY) == QCRYPTO_CTX_USE_HW_KEY) {
 		pr_err("%s HW KEY usage not supported for DES algorithm\n",
@@ -3079,7 +3141,7 @@ static struct ahash_alg _qcrypto_ahash_algos[] = {
 			.digestsize	= SHA1_DIGEST_SIZE,
 			.statesize	= sizeof(struct sha1_state),
 			.base	= {
-				.cra_name	 = "sha1",
+				.cra_name	 = "qcom-sha1",
 				.cra_driver_name = "qcrypto-sha1",
 				.cra_priority	 = 300,
 				.cra_flags	 = CRYPTO_ALG_TYPE_AHASH |
@@ -3106,7 +3168,7 @@ static struct ahash_alg _qcrypto_ahash_algos[] = {
 			.digestsize	= SHA256_DIGEST_SIZE,
 			.statesize	= sizeof(struct sha256_state),
 			.base		= {
-				.cra_name	 = "sha256",
+				.cra_name	 = "qcom-sha256",
 				.cra_driver_name = "qcrypto-sha256",
 				.cra_priority	 = 300,
 				.cra_flags	 = CRYPTO_ALG_TYPE_AHASH |
@@ -3137,7 +3199,7 @@ static struct ahash_alg _qcrypto_sha_hmac_algos[] = {
 			.digestsize	= SHA1_DIGEST_SIZE,
 			.statesize	= sizeof(struct sha1_state),
 			.base	= {
-				.cra_name	 = "hmac(sha1)",
+				.cra_name	 = "qcom-hmac(sha1)",
 				.cra_driver_name = "qcrypto-hmac-sha1",
 				.cra_priority	 = 300,
 				.cra_flags	 = CRYPTO_ALG_TYPE_AHASH |
@@ -3165,7 +3227,7 @@ static struct ahash_alg _qcrypto_sha_hmac_algos[] = {
 			.digestsize	= SHA256_DIGEST_SIZE,
 			.statesize	= sizeof(struct sha256_state),
 			.base		= {
-				.cra_name	 = "hmac(sha256)",
+				.cra_name	 = "qcom-hmac(sha256)",
 				.cra_driver_name = "qcrypto-hmac-sha256",
 				.cra_priority	 = 300,
 				.cra_flags	 = CRYPTO_ALG_TYPE_AHASH |
@@ -3185,7 +3247,7 @@ static struct ahash_alg _qcrypto_sha_hmac_algos[] = {
 
 static struct crypto_alg _qcrypto_ablk_cipher_algos[] = {
 	{
-		.cra_name		= "ecb(aes)",
+		.cra_name		= "qcom-ecb(aes)",
 		.cra_driver_name	= "qcrypto-ecb-aes",
 		.cra_priority	= 300,
 		.cra_flags	= CRYPTO_ALG_TYPE_ABLKCIPHER | CRYPTO_ALG_ASYNC,
@@ -3207,7 +3269,7 @@ static struct crypto_alg _qcrypto_ablk_cipher_algos[] = {
 		},
 	},
 	{
-		.cra_name	= "cbc(aes)",
+		.cra_name	= "qcom-cbc(aes)",
 		.cra_driver_name = "qcrypto-cbc-aes",
 		.cra_priority	= 300,
 		.cra_flags	= CRYPTO_ALG_TYPE_ABLKCIPHER | CRYPTO_ALG_ASYNC,
@@ -3230,7 +3292,7 @@ static struct crypto_alg _qcrypto_ablk_cipher_algos[] = {
 		},
 	},
 	{
-		.cra_name	= "ctr(aes)",
+		.cra_name	= "qcom-ctr(aes)",
 		.cra_driver_name = "qcrypto-ctr-aes",
 		.cra_priority	= 300,
 		.cra_flags	= CRYPTO_ALG_TYPE_ABLKCIPHER | CRYPTO_ALG_ASYNC,
@@ -3557,7 +3619,8 @@ static int  _qcrypto_probe(struct platform_device *pdev)
 	}
 	cp->high_bw_req_count = 0;
 	cp->ce_lock_count = 0;
-
+	cp->high_bw_req_count = 0;
+	cp->high_bw_req = 0;
 
 	if (cp->platform_support.ce_shared)
 		INIT_WORK(&cp->unlock_ce_ws, qcrypto_unlock_ce);
@@ -3722,13 +3785,42 @@ static int  _qcrypto_probe(struct platform_device *pdev)
 		}
 	}
 
-	qcrypto_ce_high_bw_req(cp, true);
-
+	init_timer(&(cp->bw_scale_down_timer));
+	INIT_WORK(&cp->low_bw_req_ws, qcrypto_low_bw_req_work);
+	cp->bw_scale_down_timer.function =
+				qcrypto_bw_scale_down_timer_callback;
 	return 0;
 err:
 	_qcrypto_remove(pdev);
 	return rc;
 };
+
+
+static int  _qcrypto_suspend(struct platform_device *pdev, pm_message_t state)
+{
+	if (qseecom_created_key_flag == true)
+		qce_suspend(((struct crypto_priv *)
+					platform_get_drvdata(pdev))->qce);
+	return 0;
+}
+
+static int  _qcrypto_resume(struct platform_device *pdev)
+{
+	if (qseecom_created_key_flag == true) {
+		int ret = 0;
+		uint8_t hash32[32] = {0};
+
+		ret = qseecom_create_key_kclient(
+			QSEOS_KM_USAGE_DISK_ENCRYPTION, hash32);
+		if (ret) {
+			pr_err("create key error in _qcrypto_resume.\n");
+			return ret;
+		}
+		qce_resume(((struct crypto_priv *)
+				platform_get_drvdata(pdev))->qce);
+	}
+	return 0;
+}
 
 
 static struct of_device_id qcrypto_match[] = {
@@ -3740,6 +3832,8 @@ static struct of_device_id qcrypto_match[] = {
 static struct platform_driver _qualcomm_crypto = {
 	.probe          = _qcrypto_probe,
 	.remove         = _qcrypto_remove,
+	.suspend        = _qcrypto_suspend,
+	.resume         = _qcrypto_resume,
 	.driver         = {
 		.owner  = THIS_MODULE,
 		.name   = "qcrypto",

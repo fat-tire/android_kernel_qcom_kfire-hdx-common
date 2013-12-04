@@ -433,7 +433,7 @@ static void battery_handle_work(struct work_struct *work)
 #ifdef CONFIG_AMAZON_METRICS_LOG
 
 		snprintf(buf, sizeof(buf),
-			"bq27x41:def:thermal_shutdown=1;CT;1,temp=%d;DV;1:NR",
+			"bq27x41:def:thermal_shutdown=1;CT;1,temp=%d;CT;1:NR",
 			info->battery_temperature/10);
 
 		log_to_metrics(ANDROID_LOG_INFO, "battery", buf);
@@ -813,7 +813,7 @@ static void bq27x41_late_resume(struct bq27x41_info *info)
 	if (info->early_suspend_capacity != -1) {
 		char buf[512];
 		snprintf(buf, sizeof(buf),
-			"screen_off_drain:def:value=%d;DV;1,elapsed=%ld;TI;1:NR",
+			"screen_off_drain:def:value=%d;CT;1,elapsed=%ld;TI;1:NR",
 			info->early_suspend_capacity - value,
 			diff.tv_sec * 1000 + diff.tv_nsec / NSEC_PER_MSEC);
 		log_to_metrics(ANDROID_LOG_INFO, "drain_metrics", buf);
@@ -1125,7 +1125,7 @@ static int bq27x41_battery_resume(struct i2c_client *client)
 	if (!err && info->suspend_capacity != -1) {
 		char buf[512], buf2[256];
 		snprintf(buf, sizeof(buf),
-			"suspend_drain:def:value=%d;DV;1,elapsed=%ld;TI;1:NR",
+			"suspend_drain:def:value=%d;CT;1,elapsed=%ld;TI;1:NR",
 			info->suspend_capacity - info->battery_capacity,
 			diff.tv_sec * 1000 + diff.tv_nsec / NSEC_PER_MSEC);
 		log_to_metrics(ANDROID_LOG_INFO, "drain_metrics", buf);
@@ -1135,11 +1135,11 @@ static int bq27x41_battery_resume(struct i2c_client *client)
 			diff.tv_sec * 1000 + diff.tv_nsec / NSEC_PER_MSEC);
 
 		snprintf(buf2, sizeof(buf2),
-			"batt:def:cap=%d;DV;1,mv=%d;DV;1,current=%d;DV;1,",
+			"batt:def:cap=%d;CT;1,mv=%d;CT;1,current=%d;CT;1,",
 			info->battery_capacity, info->battery_voltage,
 			info->battery_current);
 		snprintf(buf, sizeof(buf),
-			"%stemp_g=%d;DV;1,charge=%d/%d;DV;1:NR",
+		"%stemp_g=%d;CT;1,charge=%d;CT;1,charge_design=%d;CT;1:NR",
 			buf2, info->battery_temperature,
 			info->battery_remaining_charge,
 			info->battery_remaining_charge_design);

@@ -442,6 +442,7 @@ struct msm_hsic_host_platform_data {
 
 	struct msm_bus_scale_pdata *bus_scale_table;
 	unsigned log2_irq_thresh;
+	unsigned max_log2_irq_thresh;
 
 	/* gpio used to resume peripheral */
 	unsigned resume_gpio;

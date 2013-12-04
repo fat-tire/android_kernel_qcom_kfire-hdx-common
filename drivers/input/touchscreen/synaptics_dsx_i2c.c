@@ -2084,11 +2084,11 @@ static int __devinit synaptics_rmi4_probe(struct i2c_client *client,
 
 reset_device_again:
 	if (gpio_is_valid(platform_data->reset_gpio)) {
-		msleep(160);
+		msleep(660);
 		gpio_set_value(platform_data->reset_gpio, 0);
 		msleep(10);//TODO: move this reset behavior into a device tree flag
 		gpio_set_value(platform_data->reset_gpio, 1);
-		msleep(90);
+		msleep(330);
 	}
 
 	mutex_init(&(rmi4_data->rmi4_mod_info.support_fn_list_mutex));

@@ -311,7 +311,6 @@ void mdss_dsi_panel_reset(struct mdss_panel_data *pdata, int enable)
 		wake_up(&panel_on_waitqueue);
 #endif
 	} else {
-
 #if defined(CONFIG_ARCH_MSM8974_GALVAJEM)
 		gpio_set_value((ctrl_pdata->disp_en_gpio), 0);
 		wmb();
@@ -327,6 +326,9 @@ void mdss_dsi_panel_reset(struct mdss_panel_data *pdata, int enable)
 		gpio_set_value((ctrl_pdata->rst_gpio), 0);
 		if (gpio_is_valid(ctrl_pdata->disp_en_gpio))
 			gpio_set_value((ctrl_pdata->disp_en_gpio), 0);
+#if defined(CONFIG_ARCH_MSM8974_APOLLO) || defined(CONFIG_ARCH_MSM8974_THOR)
+		lcd_panel_enabled = 0;
+#endif
 	}
 }
 
